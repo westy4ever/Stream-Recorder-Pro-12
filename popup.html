@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Stream Recorder Pro</title>
+  <style>
+    body { width: 480px; min-height: 720px; margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0D1117; color: #F0F6FC; }
+    .container { display: flex; flex-direction: column; gap: 6px; }
+    .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .btn { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; background: #21262D; color: #F0F6FC; transition: all 0.2s; }
+    .btn:hover { opacity: 0.85; transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .btn-primary { background: #238636; color: #fff; }
+    .btn-danger { background: #DA3633; color: #fff; }
+    .btn-warning { background: #D29922; color: #fff; }
+    .btn-info { background: #1F6FEB; color: #fff; }
+    .btn-purple { background: #7B61FF; color: #fff; }
+    .btn-orange { background: #FF6D00; color: #fff; }
+    .btn-pink { background: #D500F9; color: #fff; }
+    .btn-cyan { background: #00BCD4; color: #fff; }
+    .btn-teal { background: #00695C; color: #fff; }
+    .btn-red { background: #FF1744; color: #fff; }
+    .btn-amber { background: #FF6F00; color: #fff; }
+    .btn-deep-purple { background: #4A148C; color: #fff; }
+    .btn-deep-orange { background: #BF360C; color: #fff; }
+    .btn-success { background: #00C853; color: #fff; }
+    .btn-sm { padding: 3px 8px; font-size: 10px; }
+    .checkbox-group { display: flex; gap: 12px; flex-wrap: wrap; padding: 4px 0; }
+    .checkbox-group label { display: flex; align-items: center; gap: 3px; font-size: 11px; color: #8B949E; cursor: pointer; }
+    .checkbox-group input[type="checkbox"] { accent-color: #238636; width: 13px; height: 13px; cursor: pointer; }
+    select { background: #21262D; color: #F0F6FC; border: 1px solid #30363D; padding: 3px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+    #status { padding: 6px 10px; border-radius: 4px; font-size: 11px; background: #161B22; color: #8B949E; min-height: 18px; }
+    #jsonPreview { width: 100%; min-height: 140px; max-height: 280px; background: #161B22; color: #F0F6FC; border: 1px solid #30363D; border-radius: 4px; padding: 6px; font-family: 'Courier New', monospace; font-size: 10px; resize: vertical; overflow: auto; white-space: pre-wrap; word-wrap: break-word; }
+    .progress-bar { width: 100%; height: 3px; background: #21262D; border-radius: 2px; overflow: hidden; margin: 3px 0; }
+    .progress-fill { height: 100%; background: #238636; width: 0%; transition: width 0.3s ease; }
+    .torrent-result { border: 1px solid #30363D; border-radius: 4px; padding: 6px; margin: 3px 0; background: #161B22; max-height: 150px; overflow-y: auto; font-size: 10px; display:none; }
+    .torrent-empty { color: #8B949E; text-align: center; padding: 10px; }
+    .divider { border-top: 1px solid #30363D; margin: 4px 0; padding-top: 4px; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 9px; font-weight: 600; background: #30363D; color: #8B949E; }
+    .badge-rec { background: #DA3633; color: #fff; }
+    .btn-group { display: flex; flex-wrap: wrap; gap: 3px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="row" style="justify-content:space-between;">
+    <span style="font-size:14px;font-weight:600;color:#00E5FF;">🎬 Stream Recorder Pro</span>
+    <span id="recBadge" class="badge">⏹ Stopped</span>
+  </div>
+
+  <!-- Controls Row 1 -->
+  <div class="row">
+    <button id="start" class="btn btn-primary">▶ Start</button>
+    <button id="stop" class="btn btn-danger" disabled>⏹ Stop</button>
+    <button id="saveSnapshot" class="btn btn-info btn-sm">📸 Snapshot</button>
+    <button id="solveChallenge" class="btn btn-warning btn-sm">🧩 Solve CF</button>
+  </div>
+
+  <!-- Controls Row 2 -->
+  <div class="row">
+    <button id="export" class="btn btn-sm" style="background:#1F6FEB;color:#fff;">📥 JSON</button>
+    <button id="exportMarkdown" class="btn btn-sm" style="background:#D29922;color:#fff;">📄 MD</button>
+    <button id="copy" class="btn btn-sm" style="background:#30363D;color:#F0F6FC;">📋 Copy</button>
+    <button id="copyStreamLinks" class="btn btn-sm" style="background:#7B61FF;color:#fff;">🔗 Streams</button>
+  </div>
+
+  <!-- Controls Row 3 - Extraction Buttons -->
+  <div class="row">
+    <button id="extractYTSTorrents" class="btn btn-sm" style="background:#238636;color:#fff;">🎯 YTS</button>
+    <button id="extractArabicMovies" class="btn btn-sm" style="background:#D29922;color:#fff;">🇸🇦 WeCima</button>
+    <button id="extractSaveFiles" class="btn btn-sm" style="background:#1F6FEB;color:#fff;">📦 SaveFiles</button>
+    <button id="findTorrentApi" class="btn btn-sm" style="background:#DA3633;color:#fff;">🧲 Torrent API</button>
+    <button id="viewPipeline" class="btn btn-sm" style="background:#7B61FF;color:#fff;">📊 Pipeline</button>
+  </div>
+
+  <!-- Controls Row 4 - Python Generator -->
+  <div class="divider"></div>
+  <div class="row" style="flex-wrap:wrap;gap:3px;">
+    <button id="genExtractor" class="btn btn-purple btn-sm">🐍 Gen Extractor</button>
+    <button id="genResolver" class="btn btn-teal btn-sm">🐍 Gen Resolver</button>
+    <button id="exportFullExtractor" class="btn btn-cyan btn-sm">🐍 Full Extractor</button>
+  </div>
+
+  <!-- Controls Row 5 - Discovery Tools -->
+  <div class="row" style="flex-wrap:wrap;gap:3px;">
+    <button id="discoverAPI" class="btn btn-orange btn-sm">🔍 APIs</button>
+    <button id="discoverStructure" class="btn btn-pink btn-sm">🏗️ Structure</button>
+    <button id="discoverQualities" class="btn btn-deep-purple btn-sm">🎯 Qualities</button>
+    <button id="analyzeHLS" class="btn btn-deep-orange btn-sm">📊 HLS</button>
+  </div>
+
+  <!-- Controls Row 6 - Advanced Tools -->
+  <div class="row" style="flex-wrap:wrap;gap:3px;">
+    <button id="findChanges" class="btn btn-red btn-sm">🔄 Changes</button>
+    <button id="analyzeMagnets" class="btn btn-amber btn-sm">🧲 Magnets</button>
+    <button id="mapSPA" class="btn btn-teal btn-sm">🗺️ SPA Map</button>
+  </div>
+
+  <!-- Controls Row 7 - New Advanced Features -->
+  <div class="row" style="flex-wrap:wrap;gap:3px;margin-top:2px;">
+    <button id="discoverRoutes" class="btn btn-cyan btn-sm">🗺️ All Routes</button>
+    <button id="discoverSelectors" class="btn btn-purple btn-sm">🎯 Selectors</button>
+    <button id="generateSchema" class="btn btn-info btn-sm">📋 Schema</button>
+    <button id="visualizeHLS" class="btn btn-deep-orange btn-sm">📹 HLS Vis</button>
+  </div>
+  <div class="row" style="flex-wrap:wrap;gap:3px;">
+    <button id="deobfuscateJS" class="btn btn-warning btn-sm">🔓 Deobfuscate</button>
+    <button id="analyzeCookies" class="btn btn-amber btn-sm">🍪 Cookies</button>
+    <button id="recordSequence" class="btn btn-teal btn-sm">🔄 Sequence</button>
+    <button id="compareSites" class="btn btn-pink btn-sm">🔀 Compare</button>
+  </div>
+  <div class="row" style="flex-wrap:wrap;gap:3px;">
+    <button id="generateRegex" class="btn btn-purple btn-sm">📝 Regex</button>
+    <button id="trackVersion" class="btn btn-cyan btn-sm">📌 Version</button>
+    <button id="generateTests" class="btn btn-success btn-sm">🧪 Tests</button>
+  </div>
+
+  <!-- Checkboxes -->
+  <div class="checkbox-group">
+    <label><input type="checkbox" id="xhrOnly"> XHR/Fetch only</label>
+    <label><input type="checkbox" id="autoSnapshot" checked> 📸 Auto-snapshot</label>
+    <label><input type="checkbox" id="hideTMDB" checked> Hide TMDB</label>
+  </div>
+
+  <!-- Tab Selector -->
+  <div class="row">
+    <span style="font-size:11px;color:#8B949E;">Record:</span>
+    <select id="recordTab">
+      <option value="all">All Tabs</option>
+      <option value="current">Current Tab</option>
+    </select>
+    <span id="filterHint" style="font-size:10px;color:#8B949E;">(capture everything)</span>
+  </div>
+
+  <!-- Status -->
+  <div id="status">Ready. Click Start to begin recording.</div>
+  <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+
+  <!-- Challenge Status -->
+  <div id="challengeStatus" style="font-size:10px;color:#FFD740;min-height:14px;"></div>
+
+  <!-- Torrent Results -->
+  <div id="torrentResults" class="torrent-result"></div>
+
+  <!-- JSON Preview -->
+  <textarea id="jsonPreview" placeholder="Recording data will appear here after stopping..."></textarea>
+
+  <!-- Footer Links -->
+  <div class="row" style="justify-content:space-between;font-size:10px;color:#8B949E;">
+    <a id="optionsLink" href="#" style="color:#58A6FF;text-decoration:none;">⚙️ Options</a>
+    <span id="detachedHint" style="display:none;">🔗 Detached window</span>
+    <button id="popOutBtn" style="background:none;border:none;color:#58A6FF;cursor:pointer;font-size:10px;">📤 Pop out</button>
+  </div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

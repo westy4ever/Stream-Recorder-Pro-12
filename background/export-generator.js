@@ -147,8 +147,16 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline) {
   }
 
   // Extract categories from actions
+  // [FIX] real sites use many different URL shapes for category-like listings, not just
+  // "/category/" -- confirmed directly against EgyDead alone, which uses /category/, /serie/,
+  // /season/, /type/, /series-category/, /genre/, /language/, /country/, /year/, /channel/.
+  // The old check caught only the first of these, silently missing the rest for any real site.
+  const CATEGORY_URL_PATTERNS = [
+    '/category/', '/categories/', '/genre/', '/genres/', '/type/', '/types/',
+    '/series-category/', '/movies-category/', '/tag/', '/tags/'
+  ];
   for (const action of actions) {
-    if (action.href && action.href.includes('/category/')) {
+    if (action.href && CATEGORY_URL_PATTERNS.some(p => action.href.includes(p))) {
       const title = action.text || action.href.split('/').pop() || 'Category';
       analysis.categories.push({
         title: title,
@@ -200,6 +208,24 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline) {
     }).filter(r => r);
   }
 
+  // [FIX] detect obfuscated JS / deferred-JSON player pages so the generator can say so
+  // honestly instead of silently emitting a find_m3u8()/find_mp4() call that will never find
+  // anything. Confirmed real-world cases this covers: P.A.C.K.E.R.-packed players (MixDrop and
+  // others), and Inertia.js-style pages where the actual stream data is a deferred prop loaded
+  // by a second request, not present in the initial HTML at all (MegaMax).
+  analysis.obfuscationDetected = [];
+  const packerSig = 'eval(function(p,a,c,k,e,d)';
+  const inertiaSig = '"component":';
+  for (const body of xhrBodies) {
+    if (!body.body) continue;
+    if (body.body.includes(packerSig) && !analysis.obfuscationDetected.includes('packer')) {
+      analysis.obfuscationDetected.push('packer');
+    }
+    if (body.body.includes(inertiaSig) && !analysis.obfuscationDetected.includes('inertia')) {
+      analysis.obfuscationDetected.push('inertia');
+    }
+  }
+
   // Extract pagination
   for (const entry of networkLog) {
     if (entry.url && entry.url.includes('page=')) {
@@ -231,13 +257,13 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `import json\n`;
   code += `import time\n`;
   code += `from urllib.parse import urljoin, urlparse\n\n`;
-  code += `# Try to import BeautifulSoup for better HTML parsing\n`;
-  code += `try:\n`;
-  code += `    from bs4 import BeautifulSoup\n`;
-  code += `    HAS_BS4 = True\n`;
-  code += `except ImportError:\n`;
-  code += `    HAS_BS4 = False\n`;
-  code += `    log("${siteName}: BeautifulSoup not available, using regex fallback")\n\n`;
+  // [FIX] this plugin's real codebase is pure-regex throughout -- zero uses of BeautifulSoup
+  // anywhere in it, confirmed across every real extractor file. Generating BS4-first code was
+  // inconsistent with the actual runtime (bs4 may not even be installed on these boxes) and
+  // with every other extractor's style. HAS_BS4 is now always False, so the regex branch
+  // (which already existed as the "fallback") is what actually runs -- matching real convention
+  // without needing to touch the larger extraction blocks below.
+  code += `HAS_BS4 = False  # this codebase is pure-regex; see extractors/*.py for the convention\n\n`;
   code += `from .base import BaseExtractor, fetch, fetch_json, find_m3u8, find_mp4, log\n`;
   code += `from .base import _correct_stream_url, _extract_quality_from_streamruby_url\n\n\n`;
 
@@ -572,11 +598,29 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `\n`;
 
   // ═══ extract_stream ═══
+  // [FIX] the old version hardcoded three per-host resolvers into EVERY generated extractor,
+  // regardless of the actual captured site: _resolve_streamruby, _resolve_doodstream (which
+  // reproduced the exact domain-redirect bug this real codebase already found and fixed --
+  // it used the ORIGINAL url's domain for the pass_md5 call instead of the domain the page
+  // actually redirected to), and _resolve_customapparelshop (a fabricated name matching no
+  // real host anywhere in this codebase). The real, correct, already-working versions of
+  // these resolvers live once, shared, in extractors/hosts.py -- reimplementing simplified
+  // (and buggy) copies per-site is exactly how that bug would have silently come back.
+  // This now points at the real shared resolvers instead of re-inventing them.
   code += `    def extract_stream(self, url):\n`;
   code += `        """\n`;
   code += `        Extract stream URL from a server URL.\n`;
   if (analysis.streamResolvers.length > 0) {
     code += `        Detected ${analysis.streamResolvers.length} stream resolvers.\n`;
+  }
+  if (analysis.obfuscationDetected && analysis.obfuscationDetected.length > 0) {
+    code += `        \n`;
+    code += `        WARNING: obfuscated/deferred content detected during capture (${analysis.obfuscationDetected.join(', ')}).\n`;
+    code += `        find_m3u8()/find_mp4() will very likely find nothing on their own here -- this\n`;
+    code += `        needs the same manual investigation approach as MixDrop's packed JS or MegaMax's\n`;
+    code += `        deferred Inertia prop: capture the real page, decode/unpack it by hand, THEN write\n`;
+    code += `        the extraction regex against what it actually decodes to. Do not trust this\n`;
+    code += `        skeleton's fallback to already work for this site.\n`;
   }
   code += `        """\n`;
   code += `        try:\n`;
@@ -585,14 +629,24 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            if '.m3u8' in url or '.mp4' in url:\n`;
   code += `                return _correct_stream_url(url), "HD", url, []\n`;
   code += `            \n`;
-  code += `            if 'streamruby.net' in url:\n`;
-  code += `                return self._resolve_streamruby(url)\n`;
-  code += `            \n`;
-  code += `            if 'dood' in url or 'dsvplay' in url or 'd0o0d' in url:\n`;
-  code += `                return self._resolve_doodstream(url)\n`;
-  code += `            \n`;
-  code += `            if 'customapparelshop' in url:\n`;
-  code += `                return self._resolve_customapparelshop(url)\n`;
+  code += `            # TODO: this plugin already has correct, shared, tested resolvers for common\n`;
+  code += `            # hosts in extractors/hosts.py (resolve_streamruby, resolve_doodstream, resolve_mixdrop,\n`;
+  code += `            # resolve_voe, and more) -- reuse those instead of writing new ones. base.py does not\n`;
+  code += `            # always re-export them, so look them up the same safe way this codebase's other\n`;
+  code += `            # extractors do:\n`;
+  code += `            #\n`;
+  code += `            #     import importlib\n`;
+  code += `            #     def _safe_import(name):\n`;
+  code += `            #         for mod in ('.hosts', '.htmlmedia', '.base'):\n`;
+  code += `            #             found = getattr(importlib.import_module(mod, package=__package__), name, None)\n`;
+  code += `            #             if found is not None:\n`;
+  code += `            #                 return found\n`;
+  code += `            #         return None\n`;
+  code += `            #     resolve_streamruby = _safe_import('resolve_streamruby')\n`;
+  code += `            #\n`;
+  code += `            # then dispatch on url's hostname to whichever of those actually apply to THIS site\n`;
+  code += `            # (check the captured network log to see which hosts this site's servers really use --\n`;
+  code += `            # do not assume streamruby/doodstream/etc. without checking).\n`;
   code += `            \n`;
   code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
   code += `            if html:\n`;
@@ -610,88 +664,6 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            return None, "", url, []\n`;
   code += `        except Exception as e:\n`;
   code += `            log("${siteName}: Extract stream error: {}".format(e))\n`;
-  code += `            return None, "", url, []\n`;
-  code += `\n`;
-
-  // ═══ Helper Methods ═══
-  code += `    # ─── Helper Methods ─────────────────────────────────────────────────────\n`;
-  code += `    \n`;
-  code += `    def _resolve_streamruby(self, url):\n`;
-  code += `        """Resolve streamruby.net URLs."""\n`;
-  code += `        try:\n`;
-  code += `            log("${siteName}: Resolving streamruby.net: {}".format(url[:80]))\n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
-  code += `            if not html:\n`;
-  code += `                return None, "", url, []\n`;
-  code += `            \n`;
-  code += `            patterns = [\n`;
-  code += `                r'(https?://[^\\s"\'<>]+streamruby\\.net[^\\s"\'<>]+master\\.m3u8[^\\s"\'<>]*)',\n`;
-  code += `                r'(https?://[^\\s"\'<>]+streamruby\\.net[^\\s"\'<>]+index[^\\s"\'<>]*\\.m3u8[^\\s"\'<>]*)',\n`;
-  code += `            ]\n`;
-  code += `            \n`;
-  code += `            for pattern in patterns:\n`;
-  code += `                match = re.search(pattern, html, re.I)\n`;
-  code += `                if match:\n`;
-  code += `                    stream_url = _correct_stream_url(match.group(1))\n`;
-  code += `                    quality = "HD"\n`;
-  code += `                    if "_o" in stream_url or "1080" in stream_url:\n`;
-  code += `                        quality = "1080p"\n`;
-  code += `                    elif "_h" in stream_url or "720" in stream_url:\n`;
-  code += `                        quality = "720p"\n`;
-  code += `                    elif "_n" in stream_url:\n`;
-  code += `                        quality = "480p"\n`;
-  code += `                    return stream_url, quality, url, []\n`;
-  code += `            \n`;
-  code += `            return None, "", url, []\n`;
-  code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: _resolve_streamruby error: {}".format(e))\n`;
-  code += `            return None, "", url, []\n`;
-  code += `    \n`;
-  code += `    def _resolve_doodstream(self, url):\n`;
-  code += `        """Resolve doodstream URLs."""\n`;
-  code += `        try:\n`;
-  code += `            log("${siteName}: Resolving doodstream: {}".format(url[:80]))\n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
-  code += `            if not html:\n`;
-  code += `                return None, "", url, []\n`;
-  code += `            \n`;
-  code += `            match = re.search(r'\\$?\\.get\\(["\\'](/pass_md5/[^"\\']+)["\\']', html)\n`;
-  code += `            if match:\n`;
-  code += `                from urllib.parse import urlparse\n`;
-  code += `                parsed = urlparse(url)\n`;
-  code += `                dood_base = f"{parsed.scheme}://{parsed.netloc}"\n`;
-  code += `                token_url = dood_base + match.group(1)\n`;
-  code += `                token_html, _ = fetch(token_url, referer=url)\n`;
-  code += `                if token_html:\n`;
-  code += `                    token = match.group(1).split("/")[-1]\n`;
-  code += `                    import random, string, time\n`;
-  code += `                    chars = string.ascii_letters + string.digits\n`;
-  code += `                    rand = "".join(random.choice(chars) for _ in range(10))\n`;
-  code += `                    stream_url = f"{dood_base}{token_html.strip()}{rand}?token={token}&expiry={int(time.time() * 1000)}"\n`;
-  code += `                    return stream_url, "HD", url, []\n`;
-  code += `            \n`;
-  code += `            return None, "", url, []\n`;
-  code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: _resolve_doodstream error: {}".format(e))\n`;
-  code += `            return None, "", url, []\n`;
-  code += `    \n`;
-  code += `    def _resolve_customapparelshop(self, url):\n`;
-  code += `        """Resolve customapparelshop.shop URLs."""\n`;
-  code += `        try:\n`;
-  code += `            log("${siteName}: Resolving customapparelshop: {}".format(url[:80]))\n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
-  code += `            if not html:\n`;
-  code += `                return None, "", url, []\n`;
-  code += `            \n`;
-  code += `            pattern = r'(https?://[^\\s"\'<>]+customapparelshop\\.shop[^\\s"\'<>]+master\\.(?:txt|m3u8)[^\\s"\'<>]*)'\n`;
-  code += `            match = re.search(pattern, html, re.I)\n`;
-  code += `            if match:\n`;
-  code += `                stream_url = _correct_stream_url(match.group(1))\n`;
-  code += `                return stream_url, "HD", url, []\n`;
-  code += `            \n`;
-  code += `            return None, "", url, []\n`;
-  code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: _resolve_customapparelshop error: {}".format(e))\n`;
   code += `            return None, "", url, []\n`;
   code += `\n`;
 

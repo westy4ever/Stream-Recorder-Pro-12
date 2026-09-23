@@ -80,6 +80,11 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
     if (pageTitle && pageTitle.length > 0) {
       let cleanTitle = pageTitle
         .replace(/\s*[|:]\s*(EgyDead|Wecima|MyCima|YTS|YIFY|Arabic|Movie|Series|TV|Online|Watch|Stream|HD|1080p|720p|480p|360p)\s*/gi, '')
+        // [FIX] the site-name list above is Latin-only, but real EgyDead titles end with the
+        // Arabic transliteration "ايجي ديد" (confirmed on every real page title
+        // captured this session), which never matched -- leaving that noise in every filename
+        // and eating into the character budget that should go to the actual page name.
+        .replace(/\s*[|:]\s*\u0627\u064a\u062c\u064a\s*\u062f\u064a\u062f\s*/g, '')
         .replace(/[^a-zA-Z0-9\u0600-\u06ff\s-]/g, '')
         .trim();
       
@@ -135,8 +140,8 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
 }
 
 // ═══ SNAPSHOT CAPTURE ═══
-export function scheduleAutoSnapshot(tabId, delay = 1200) {
-  console.log("[auto-snapshot] scheduleAutoSnapshot called for tab", tabId, "delay", delay);
+export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false) {
+  console.log("[auto-snapshot] scheduleAutoSnapshot called for tab", tabId, "delay", delay, "bypassCooldown", bypassCooldown);
   
   chrome.tabs.get(tabId, (tab) => {
     if (chrome.runtime.lastError || !tab) {
@@ -144,6 +149,7 @@ export function scheduleAutoSnapshot(tabId, delay = 1200) {
       return;
     }
     console.log("[auto-snapshot] tab info:", tab.id, tab.url);
+    if (delay === undefined || delay === null) delay = 1200;
     if (isYTSSite(tab.url) || isArabicMovieSite(tab.url)) {
       delay = 800;
     }
@@ -152,7 +158,10 @@ export function scheduleAutoSnapshot(tabId, delay = 1200) {
     const lastTime = lastSnapshotTime[tabId] || 0;
     const minInterval = CONFIG.SNAPSHOT_COOLDOWN_MS || 2000;
     
-    if (now - lastTime < minInterval) {
+    // [FIX] a form-submit reveal (bypassCooldown=true) is explicit and low-frequency; it must
+    // never be silently swallowed by the generic per-tab cooldown, which exists to stop noisy
+    // click/mutation spam, not to gate a deliberate user action.
+    if (!bypassCooldown && now - lastTime < minInterval) {
       console.log("[auto-snapshot] ⏱️ Skipping duplicate snapshot - too soon (", now - lastTime, "ms since last)");
       return;
     }
@@ -178,12 +187,43 @@ export function captureSnapshot(callback, specificTabId) {
       if (callback) callback(false);
       return;
     }
+    // [FIX] lastSnapshotTime used to only get recorded deep inside the download-success
+    // callback, AFTER two separate async chrome.scripting.executeScript round-trips (title,
+    // then the full multi-frame HTML) had already completed -- a real window of hundreds of
+    // milliseconds to over a second where a capture was genuinely in progress but the cooldown
+    // check had no way to know that, since the timestamp it reads hadn't been updated yet. A
+    // second scheduling call landing in that window would sail straight through the cooldown
+    // and fire its own, separate capture of the same page -- a real duplicate snapshot, not
+    // just a theoretical one. Recording the timestamp here, the moment a capture actually
+    // starts, closes that window: anything arriving while this capture is still in flight now
+    // correctly sees a fresh timestamp and gets cooldown-blocked, the way it was always meant to.
+    lastSnapshotTime[targetTab.id] = Date.now();
     console.log("[auto-snapshot] capturing tab", targetTab.id, targetTab.url);
     
     // Get page title first
+    // [FIX] document.title reflects whatever <title> element is FIRST in the document, per the
+    // DOM spec -- but real sites sometimes have more than one <title> tag in <head> (a plugin
+    // or widget injecting a generic one alongside the theme's real, page-specific one).
+    // Confirmed directly: a real captured page had document.title returning the site's generic
+    // homepage title while a second, later <title> tag in the SAME document correctly held the
+    // actual page name ("... Greenland 2: Migration 2026 ...") -- meaning every snapshot from
+    // that session used the same generic filename despite being genuinely different pages.
+    // Scanning every <title> tag and preferring the longest one is a general fix, not specific
+    // to this one site: a page-specific title is reliably longer than a generic branding-only
+    // one, since it carries the branding suffix PLUS the actual content name.
     chrome.scripting.executeScript({
       target: { tabId: targetTab.id },
-      func: () => document.title
+      func: () => {
+        try {
+          const titles = Array.from(document.querySelectorAll('title'))
+            .map(t => (t.textContent || '').trim())
+            .filter(t => t.length > 0);
+          if (titles.length === 0) return document.title || '';
+          return titles.reduce((best, t) => (t.length > best.length ? t : best), titles[0]);
+        } catch (e) {
+          return document.title || '';
+        }
+      }
     }, (titleResults) => {
       const pageTitle = titleResults && titleResults[0] ? titleResults[0].result : '';
       

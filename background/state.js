@@ -5,7 +5,14 @@ import { CONFIG } from './config.js';
 export let state = {
   recording: false,
   filterMode: "all",
-  autoSnapshot: false,
+  // [FIX] was false. This is the actual, empirically confirmed reason a real reverse-engineering
+  // session (2026-09-22) kept needing manual re-captures after every "click reveal, form-post
+  // reveal, client-side redirect reveal" pattern: the auto-recapture wiring already existed
+  // (pageLoaded/action handlers already call scheduleAutoSnapshot) but was silently off unless
+  // explicitly toggled on in the popup for that session. For this tool's actual purpose -- never
+  // missing the revealed state of a page -- an occasional extra snapshot is a far smaller cost
+  // than missing the one that matters.
+  autoSnapshot: true,
   primaryDomain: null,
   actions: [],
   networkLog: [],

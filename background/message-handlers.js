@@ -210,7 +210,12 @@ export function initMessageHandlers() {
         
         scheduleSave();
         
-        const isCaptureWorthy = message.actionType === "navigate" || message.actionType === "click" || message.actionType === "spa_navigate";
+        // [FIX] "submit" was missing here. A <form method="post"> submit (e.g. EgyDead's
+        // "watch" button, which POSTs and reloads the SAME url with the server list now
+        // revealed) never counted as capture-worthy, so this exact, very common reveal pattern
+        // never auto-recaptured -- confirmed directly against a real reverse-engineering
+        // session this tool was built to support.
+        const isCaptureWorthy = message.actionType === "navigate" || message.actionType === "click" || message.actionType === "spa_navigate" || message.actionType === "submit";
         const isSame = isSameSite(message.url);
         console.log("[auto-snapshot] ACTION - isCaptureWorthy:", isCaptureWorthy, "isSameSite:", isSame, "autoSnapshot:", s.autoSnapshot, "sender.frameId:", sender.frameId);
         
@@ -218,7 +223,12 @@ export function initMessageHandlers() {
           const tabId = sender.tab.id;
           if (isSame) {
             console.log("[auto-snapshot] ✅ scheduling from action:", message.actionType, message.url);
-            scheduleAutoSnapshot(tabId);
+            // [FIX] a form submit is a deliberate, low-frequency, user-driven reveal action --
+            // unlike clicks/spa-mutations, it should never be silently dropped by the generic
+            // per-tab cooldown meant to stop noisy click/mutation spam. A page freshly loaded
+            // and then immediately submitted (fast human click-through) would otherwise fall
+            // inside CONFIG.SNAPSHOT_COOLDOWN_MS and lose the reveal snapshot entirely.
+            scheduleAutoSnapshot(tabId, undefined, message.actionType === "submit");
           } else {
             console.log("[auto-snapshot] ❌ action skipped - not same site:", message.url);
           }
@@ -441,11 +451,20 @@ export function initMessageHandlers() {
         }
       }
       
-      if (message.url && sender.tab && sender.frameId === 0) {
+      // [PATCH 119] this used to call setPrimaryDomainFromUrl() unconditionally on EVERY
+      // pageLoaded event, in every tracked tab -- meaning any popup or redirect to an
+      // unrelated domain (an ad, a download-prep interstitial, anything) would silently
+      // hijack primaryDomain away from the site actually being investigated, after which
+      // isSameSite() treated the unrelated domain as "in scope" and the real site as
+      // "out of scope". Only filling it in when it is not already set keeps it sticky to
+      // wherever recording actually started, while still covering the legitimate case of
+      // starting on a blank/new tab (no primaryDomain yet) and letting the first real
+      // navigation set it.
+      if (message.url && sender.tab && sender.frameId === 0 && !s.primaryDomain) {
         const wasSet = setPrimaryDomainFromUrl(message.url);
         if (wasSet) {
-          console.log("[auto-snapshot] primaryDomain updated to:", s.primaryDomain);
-        } else if (!s.primaryDomain) {
+          console.log("[auto-snapshot] primaryDomain set to:", s.primaryDomain);
+        } else {
           console.log("[auto-snapshot] No primaryDomain set, URL:", message.url);
         }
       }

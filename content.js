@@ -47,22 +47,120 @@ chrome.runtime.sendMessage({ type: "pageLoaded", url: window.location.href }).ca
 // ═══ RECORDING INDICATOR ═══
 let indicatorElement = null;
 
+// [FIX] the indicator used to be pointer-events:none -- completely static, no way to move it
+// out of the way if it happened to sit over something on the page you were trying to click
+// (a Watch button, a download link near that corner), and no way to shrink it either. Now
+// draggable (click-and-drag the badge itself) and has a small minimize toggle (the "–" button)
+// that shrinks it to a small dot while keeping the visual "recording is active" reminder.
+// Position is remembered for the rest of this page load via sessionStorage, so navigating
+// within the same tab keeps it where you put it instead of resetting to the corner each time.
+const INDICATOR_POS_KEY = '__srIndicatorPos';
+const INDICATOR_MIN_KEY = '__srIndicatorMinimized';
+
 function showRecordingIndicator() {
   if (indicatorElement) return;
-  
+
+  let savedPos = null;
+  let savedMinimized = false;
+  try {
+    const raw = sessionStorage.getItem(INDICATOR_POS_KEY);
+    if (raw) savedPos = JSON.parse(raw);
+    savedMinimized = sessionStorage.getItem(INDICATOR_MIN_KEY) === '1';
+  } catch (e) { /* sessionStorage unavailable (e.g. sandboxed frame) -- fall back to default */ }
+
   indicatorElement = document.createElement('div');
   indicatorElement.id = 'stream-recorder-indicator';
   indicatorElement.style.cssText = `
-    position: fixed; bottom: 10px; right: 10px; z-index: 999999;
-    background: #ff0000; color: white; padding: 6px 12px; border-radius: 4px;
+    position: fixed; z-index: 999999;
+    background: #ff0000; color: white; border-radius: 4px;
     font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-    opacity: 0.85; pointer-events: none;
+    opacity: 0.85; pointer-events: auto;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     border: 1px solid rgba(255,255,255,0.2);
-    font-weight: bold;
+    font-weight: bold; cursor: move; user-select: none;
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px;
   `;
-  indicatorElement.textContent = '🔴 REC';
+  if (savedPos && typeof savedPos.top === 'number' && typeof savedPos.left === 'number') {
+    indicatorElement.style.top = savedPos.top + 'px';
+    indicatorElement.style.left = savedPos.left + 'px';
+  } else {
+    indicatorElement.style.bottom = '10px';
+    indicatorElement.style.right = '10px';
+  }
+
+  const label = document.createElement('span');
+  label.id = 'stream-recorder-indicator-label';
+  const minimizeBtn = document.createElement('span');
+  minimizeBtn.id = 'stream-recorder-indicator-toggle';
+  minimizeBtn.title = 'Minimize / restore';
+  minimizeBtn.style.cssText = `
+    cursor: pointer; pointer-events: auto; padding: 0 3px;
+    border-left: 1px solid rgba(255,255,255,0.35); font-weight: normal;
+  `;
+
+  function applyMinimizedState(minimized) {
+    if (minimized) {
+      label.textContent = '🔴';
+      minimizeBtn.textContent = '+';
+      indicatorElement.style.padding = '4px 6px';
+    } else {
+      label.textContent = '🔴 REC';
+      minimizeBtn.textContent = '–';
+      indicatorElement.style.padding = '6px 8px';
+    }
+    try { sessionStorage.setItem(INDICATOR_MIN_KEY, minimized ? '1' : '0'); } catch (e) {}
+  }
+  applyMinimizedState(savedMinimized);
+
+  minimizeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    applyMinimizedState(minimizeBtn.textContent === '–');
+  });
+
+  indicatorElement.appendChild(label);
+  indicatorElement.appendChild(minimizeBtn);
   document.body.appendChild(indicatorElement);
+
+  // ─── Drag to move ───
+  let dragging = false;
+  let dragOffsetX = 0, dragOffsetY = 0;
+  let moved = false;
+
+  indicatorElement.addEventListener('mousedown', (e) => {
+    if (e.target === minimizeBtn) return; // don't start a drag from the minimize button
+    dragging = true;
+    moved = false;
+    const rect = indicatorElement.getBoundingClientRect();
+    dragOffsetX = e.clientX - rect.left;
+    dragOffsetY = e.clientY - rect.top;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    moved = true;
+    // switch from bottom/right to top/left positioning once a drag starts, so it can be
+    // placed anywhere rather than staying anchored to a corner
+    indicatorElement.style.bottom = '';
+    indicatorElement.style.right = '';
+    const maxLeft = window.innerWidth - indicatorElement.offsetWidth;
+    const maxTop = window.innerHeight - indicatorElement.offsetHeight;
+    const left = Math.min(Math.max(0, e.clientX - dragOffsetX), Math.max(0, maxLeft));
+    const top = Math.min(Math.max(0, e.clientY - dragOffsetY), Math.max(0, maxTop));
+    indicatorElement.style.left = left + 'px';
+    indicatorElement.style.top = top + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (moved) {
+      try {
+        const rect = indicatorElement.getBoundingClientRect();
+        sessionStorage.setItem(INDICATOR_POS_KEY, JSON.stringify({ top: rect.top, left: rect.left }));
+      } catch (e) {}
+    }
+  });
 }
 
 function hideRecordingIndicator() {
@@ -126,7 +224,7 @@ const UNIVERSAL_SELECTORS = {
     '.btn-primary.download-btn', 'a[href*="/v/"]', 'table tr'
   ],
   streaming: [
-    '.movie-item', '.film-item', '.card', '.poster', '.title',
+    '.movieItem', '.movie-item', '.film-item', '.card', '.poster', '.title',
     '.browse-movie-wrap', '.torrent-card', '.download-link'
   ]
 };
@@ -259,12 +357,13 @@ function getPageState() {
       }
     } else if (isStreamingSite()) {
       state.siteType = 'streaming';
-      const movieItems = document.querySelectorAll('.movie-item, .film-item, .card');
+      // [FIX] '.movieItem' is EgyDead's real class; the old list never matched it.
+      const movieItems = document.querySelectorAll('.movieItem, .movie-item, .film-item, .card');
       if (movieItems.length > 0) {
         state.pageType = 'movie_list';
         state.movieCount = movieItems.length;
       }
-      const detailItems = document.querySelectorAll('.title, h1, .movie-title');
+      const detailItems = document.querySelectorAll('.title, .BottomTitle, h1, .movie-title');
       if (detailItems.length > 0 && window.location.pathname.includes('/movie/')) {
         state.pageType = 'movie_detail';
         state.movieTitle = detailItems[0]?.textContent?.trim() || '';
@@ -376,17 +475,24 @@ function extractStreamingContent() {
   if (!isStreamingSite()) return null;
   
   const items = [];
-  const selectors = ['.movie-item', '.film-item', '.card', '.poster', '.title', '.browse-movie-wrap'];
+  // [FIX] '.movieItem' (no hyphen) is EgyDead's real container class, confirmed against many
+  // real captured pages this session -- the old list only had '.movie-item' (with a hyphen),
+  // which never matches, so this whole function silently returned [] for every EgyDead page.
+  const selectors = ['.movieItem', '.movie-item', '.film-item', '.card', '.poster', '.title', '.browse-movie-wrap'];
   
   for (const selector of selectors) {
     const elements = document.querySelectorAll(selector);
     for (const el of elements) {
-      const title = el.querySelector('.title, h3, .movie-title, .film-title')?.textContent?.trim() || '';
+      // [FIX] '.BottomTitle' and '.cat_name' are EgyDead's real title/category classes.
+      const title = el.querySelector('.title, .BottomTitle, h3, .movie-title, .film-title')?.textContent?.trim() || '';
       const poster = el.querySelector('img')?.src || '';
       const link = el.querySelector('a[href*="/movie/"], a[href*="/watch/"], a')?.href || '';
+      const category = el.querySelector('.cat_name')?.textContent?.trim() || '';
       
       if (title || poster || link) {
-        items.push({ title, poster, url: link, type: 'streaming_item' });
+        const item = { title, poster, url: link, type: 'streaming_item' };
+        if (category) item.category = category;
+        items.push(item);
       }
     }
     if (items.length > 0) break;

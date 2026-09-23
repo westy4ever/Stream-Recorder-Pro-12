@@ -49,6 +49,16 @@
     <span id="recBadge" class="badge">⏹ Stopped</span>
   </div>
 
+  <!-- Pop-out control: this popup is a browser-controlled dropdown and can't be dragged or
+       kept open while you click the page behind it -- that's a Chrome platform limitation,
+       not something this extension's own code can override. Popping it out opens the exact
+       same panel as a real, independent window instead: drag it anywhere by its title bar,
+       resize it, and it stays open regardless of what you click on the page. -->
+  <div class="row" style="justify-content:flex-end;align-items:center;">
+    <span id="detachedHint" style="display:none;font-size:11px;color:#3FB950;">🔗 Detached window — drag it by its title bar to move</span>
+    <button id="popOutBtn" class="btn btn-sm" style="background:#30363D;color:#58A6FF;border:1px solid #58A6FF;">📤 Pop out into a movable window</button>
+  </div>
+
   <!-- Controls Row 1 -->
   <div class="row">
     <button id="start" class="btn btn-primary">▶ Start</button>
@@ -63,6 +73,20 @@
     <button id="exportMarkdown" class="btn btn-sm" style="background:#D29922;color:#fff;">📄 MD</button>
     <button id="copy" class="btn btn-sm" style="background:#30363D;color:#F0F6FC;">📋 Copy</button>
     <button id="copyStreamLinks" class="btn btn-sm" style="background:#7B61FF;color:#fff;">🔗 Streams</button>
+  </div>
+
+  <!-- Export scope: lets large sessions be downloaded as smaller, focused files instead of
+       one big JSON/MD dump. Applies to both the JSON and MD buttons above. -->
+  <div class="row" style="align-items:center;gap:6px;">
+    <label for="exportScope" style="font-size:11px;color:#8B949E;white-space:nowrap;">Export:</label>
+    <select id="exportScope" class="btn btn-sm" style="flex:1;background:#161B22;color:#F0F6FC;border:1px solid #30363D;">
+      <option value="all">📦 Everything (1 file)</option>
+      <option value="split">🗂️ Split by section (separate files)</option>
+      <option value="networkLog">🌐 Network Log only</option>
+      <option value="xhrBodies">📄 Response Bodies only</option>
+      <option value="actions">🖱️ Actions / Journey only</option>
+      <option value="contentPipeline">🎬 Content (movies/downloads) only</option>
+    </select>
   </div>
 
   <!-- Controls Row 3 - Extraction Buttons -->
@@ -149,8 +173,6 @@
   <!-- Footer Links -->
   <div class="row" style="justify-content:space-between;font-size:10px;color:#8B949E;">
     <a id="optionsLink" href="#" style="color:#58A6FF;text-decoration:none;">⚙️ Options</a>
-    <span id="detachedHint" style="display:none;">🔗 Detached window</span>
-    <button id="popOutBtn" style="background:none;border:none;color:#58A6FF;cursor:pointer;font-size:10px;">📤 Pop out</button>
   </div>
 </div>
 <script src="popup.js"></script>

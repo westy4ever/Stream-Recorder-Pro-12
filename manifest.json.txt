@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Stream Recorder Pro",
+  "version": "4.1.0",
+  "minimum_chrome_version": "111",
+  "description": "Reverse engineer streaming sites - capture APIs, streams, and generate Python extractors for Enigma2",
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
+  "permissions": ["storage", "unlimitedStorage", "downloads", "webRequest", "scripting", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "web_accessible_resources": [{
+    "resources": ["websocket-hook.js"],
+    "matches": ["<all_urls>"]
+  }],
+  "background": { "service_worker": "background/background.js", "type": "module" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Stream Recorder Pro",
+    "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+  },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start", "all_frames": true, "match_about_blank": true },
+    { "matches": ["<all_urls>"], "js": ["page-hook.js"], "run_at": "document_start", "world": "MAIN", "all_frames": true, "match_about_blank": true }
+  ],
+  "commands": {
+    "take-snapshot": { "suggested_key": { "default": "Ctrl+Shift+S" }, "description": "Take Snapshot" },
+    "toggle-recording": { "suggested_key": { "default": "Ctrl+Shift+R" }, "description": "Toggle Recording" },
+    "_execute_action": { "suggested_key": { "default": "Ctrl+Shift+E" }, "description": "Open Popup" }
+  }
+}

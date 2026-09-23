@@ -175,41 +175,190 @@ stopBtn.onclick = () => {
   });
 };
 
+// ═══ EXPORT SCOPE (large sessions -> smaller, focused files) ═══
+const exportScopeSelect = document.getElementById("exportScope");
+
+// The top-level sections a recording can be split into, in the order they should download.
+const EXPORT_SECTIONS = [
+  { key: 'networkLog', label: 'networkLog' },
+  { key: 'xhrBodies', label: 'xhrBodies' },
+  { key: 'actions', label: 'actions' },
+  { key: 'userJourney', label: 'userJourney' },
+  { key: 'contentPipeline', label: 'contentPipeline' },
+];
+
+// Returns a smaller data object containing only what the chosen scope asks for. "all" and
+// "split" both return the full object -- "split" needs every section available so it can
+// hand each one to a separate download; only single-section scopes actually filter anything.
+// This is deliberately just a filter in front of the EXISTING export functions (exportAsCSV /
+// exportAsHAR / exportAsMarkdown / plain JSON.stringify) rather than a rewrite of them, so
+// every format keeps working exactly as it did before for anyone who leaves scope on "all".
+function getScopedData(data, scope) {
+  if (scope === 'all' || scope === 'split' || !scope) return data;
+  if (scope === 'actions') {
+    // "Actions / Journey" is a combined view since both describe user-driven navigation.
+    return { actions: data.actions || [], userJourney: data.userJourney || [] };
+  }
+  if (EXPORT_SECTIONS.some(s => s.key === scope)) {
+    return { [scope]: data[scope] };
+  }
+  return data;
+}
+
+function sizeLabel(str) {
+  const bytes = str.length;
+  if (bytes > 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  if (bytes > 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function downloadBlob(content, filename, mimeType) {
+  return new Promise((resolve) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
+      const ok = !chrome.runtime.lastError;
+      URL.revokeObjectURL(url);
+      resolve({ ok, filename, error: chrome.runtime.lastError?.message });
+    });
+  });
+}
+
+// One section can still be huge on its own (a long session's networkLog, say) even after
+// splitting by category. MAX_CHUNK_BYTES caps how big any single downloaded file is allowed
+// to get -- an oversized array-valued section is broken into further "_part1", "_part2", ...
+// files, each under this size, instead of one very large file for that section.
+const MAX_CHUNK_BYTES = 4 * 1024 * 1024; // 4MB -- comfortably uploadable/readable in one go
+
+// Splits an array into pieces whose SERIALIZED JSON size each stay under maxBytes. A single
+// item that is itself larger than maxBytes still gets its own chunk (never dropped, never
+// stuck in an infinite loop) -- it just can't be shrunk further without losing data.
+function chunkArrayBySize(array, maxBytes) {
+  const chunks = [];
+  let current = [];
+  let currentSize = 2; // "[]"
+  for (const item of array) {
+    const itemSize = JSON.stringify(item).length + 1; // +1 for the comma/bracket overhead
+    if (current.length > 0 && currentSize + itemSize > maxBytes) {
+      chunks.push(current);
+      current = [];
+      currentSize = 2;
+    }
+    current.push(item);
+    currentSize += itemSize;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+// Splits the recording into one file per non-empty top-level section, plus a small manifest
+// file listing what was produced and how big each piece is -- this is what actually solves
+// "the JSON is too large to open/upload": each downloaded file stays focused on one kind of
+// data instead of everything landing in a single, often huge, combined file. Sections that are
+// themselves still too large after that (a long session's networkLog, say) are further broken
+// into size-capped "_part1", "_part2", ... files via chunkArrayBySize above, so no single
+// downloaded file should end up unmanageably large either way.
+async function doSplitExport(data, format) {
+  const isMarkdown = format === 'markdown';
+  const ext = isMarkdown ? 'md' : 'json';
+  const mimeType = isMarkdown ? 'text/markdown' : 'application/json';
+  const manifest = [];
+  let done = 0;
+
+  const sectionsPresent = EXPORT_SECTIONS.filter(s => {
+    const v = data[s.key];
+    return Array.isArray(v) ? v.length > 0 : (v && Object.keys(v).length > 0);
+  });
+
+  // Pre-flight: work out how many files each section will actually produce, so progress
+  // reporting and the manifest both reflect the real total (including chunked-out parts).
+  const plan = sectionsPresent.map(section => {
+    const value = data[section.key];
+    if (Array.isArray(value)) {
+      const wholeSize = JSON.stringify(value).length;
+      if (wholeSize > MAX_CHUNK_BYTES) {
+        return { section, chunks: chunkArrayBySize(value, MAX_CHUNK_BYTES) };
+      }
+      return { section, chunks: [value] };
+    }
+    // non-array sections (contentPipeline, etc.) aren't chunked internally -- downloaded whole.
+    return { section, chunks: [value] };
+  });
+  const total = plan.reduce((n, p) => n + p.chunks.length, 0);
+
+  for (const { section, chunks } of plan) {
+    const multi = chunks.length > 1;
+    for (let i = 0; i < chunks.length; i++) {
+      const scoped = { [section.key]: chunks[i] };
+      const content = isMarkdown ? exportAsMarkdown(scoped) : JSON.stringify(scoped, null, 2);
+      const partSuffix = multi ? `_part${i + 1}of${chunks.length}` : '';
+      const filename = `stream_recording_${section.label}${partSuffix}.${ext}`;
+      const result = await downloadBlob(content, filename, mimeType);
+      manifest.push(`${result.ok ? '✅' : '❌'} ${filename} — ${sizeLabel(content)}${result.error ? ' (' + result.error + ')' : ''}`);
+      done++;
+      progressFill.style.width = Math.round((done / total) * 90) + "%";
+      statusDiv.innerText = `⏳ Splitting export... (${done}/${total})`;
+      // small gap between downloads -- Chrome silently drops downloads fired in too tight a burst
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+
+  const manifestText = `Stream Recorder Pro — split export manifest\n` +
+    `Generated: ${new Date().toISOString()}\n` +
+    `Max file size target: ${(MAX_CHUNK_BYTES / 1024 / 1024).toFixed(0)} MB per file\n\n` +
+    manifest.join('\n') + '\n';
+  await downloadBlob(manifestText, 'stream_recording_MANIFEST.txt', 'text/plain');
+
+  progressFill.style.width = "100%";
+  statusDiv.innerText = `✅ Split export done: ${total} file(s) + manifest`;
+  setTimeout(() => {
+    if (statusDiv.innerText.includes("Split export done")) statusDiv.innerText = "✅ Ready";
+  }, 3000);
+}
+
 // ═══ EXPORT FUNCTIONS ═══
 function doExport(format) {
   if (!currentRecordingData) { alert("No recording data. Click Stop first."); return; }
   if (isExporting) return;
   isExporting = true;
-  
+
+  const scope = exportScopeSelect ? exportScopeSelect.value : 'all';
+
   statusDiv.innerText = `⏳ Exporting ${format.toUpperCase()}... (0%)`;
   progressFill.style.width = "0%";
-  
+
+  if (scope === 'split' && (format === 'json' || format === 'markdown')) {
+    doSplitExport(currentRecordingData, format).finally(() => { isExporting = false; });
+    return;
+  }
+
   try {
-    const data = currentRecordingData;
+    const data = getScopedData(currentRecordingData, scope);
     let content, filename, mimeType;
+    const scopeSuffix = (scope && scope !== 'all') ? `_${scope}` : '';
     
     switch (format) {
       case 'csv':
         content = exportAsCSV(data);
         // ═══ FIX: Use proper filename ═══
-        filename = 'stream_recording.csv';
+        filename = `stream_recording${scopeSuffix}.csv`;
         mimeType = 'text/csv';
         break;
       case 'har':
         content = JSON.stringify(exportAsHAR(data), null, 2);
-        filename = 'stream_recording.har';
+        filename = `stream_recording${scopeSuffix}.har`;
         mimeType = 'application/json';
         break;
       case 'markdown':
         content = exportAsMarkdown(data);
         // ═══ FIX: Use proper filename ═══
-        filename = 'stream_recording.md';
+        filename = `stream_recording${scopeSuffix}.md`;
         mimeType = 'text/markdown';
         break;
       default:
         content = JSON.stringify(data, null, 2);
         // ═══ FIX: Use proper filename ═══
-        filename = 'stream_recording.json';
+        filename = `stream_recording${scopeSuffix}.json`;
         mimeType = 'application/json';
     }
     
@@ -236,7 +385,7 @@ function doExport(format) {
       if (chrome.runtime.lastError) {
         statusDiv.innerText = `❌ Export ${format} failed: ${chrome.runtime.lastError.message}`;
       } else {
-        statusDiv.innerText = `✅ Exported ${format.toUpperCase()} as ${filename}`;
+        statusDiv.innerText = `✅ Exported ${format.toUpperCase()} as ${filename} (${sizeLabel(content)})`;
         setTimeout(() => {
           if (statusDiv.innerText.includes("Exported")) {
             statusDiv.innerText = "✅ Ready";

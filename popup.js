@@ -699,10 +699,28 @@ copyBtn.onclick = () => {
 };
 
 // ═══ SNAPSHOT ═══
+// [FIX] the background capture this button waits on can now (see screenshot.js) never hang
+// longer than ~8s on its own -- but this adds an independent safety net at the popup level
+// too, so the bar can never sit stuck indefinitely here even if some OTHER, different cause
+// ever prevents chrome.runtime.sendMessage's callback from firing.
 saveSnapshotBtn.onclick = () => {
   statusDiv.innerText = "📸 Saving snapshot...";
   progressFill.style.width = "30%";
+
+  let responded = false;
+  const POPUP_SNAPSHOT_TIMEOUT_MS = 12000; // a little longer than screenshot.js's own 8s timeout
+  const timeoutId = setTimeout(() => {
+    if (responded) return;
+    responded = true;
+    progressFill.style.width = "100%";
+    statusDiv.innerText = "❌ Snapshot timed out. Check the background console for details.";
+    setTimeout(() => { progressFill.style.width = "0%"; }, 500);
+  }, POPUP_SNAPSHOT_TIMEOUT_MS);
+
   chrome.runtime.sendMessage({ type: "saveSnapshot" }, (response) => {
+    if (responded) return; // the popup-level timeout already fired; ignore this late reply
+    responded = true;
+    clearTimeout(timeoutId);
     progressFill.style.width = "100%";
     if (response && response.status === "saved") {
       statusDiv.innerText = "✅ Snapshot saved to Downloads folder.";

@@ -226,11 +226,40 @@ export function captureSnapshot(callback, specificTabId) {
       }
     }, (titleResults) => {
       const pageTitle = titleResults && titleResults[0] ? titleResults[0].result : '';
-      
+
+      // [FIX] a page can load a frame that never finishes loading in a way Chrome considers
+      // "ready" (Google's reCAPTCHA iframe is a known real case -- confirmed present on a real
+      // captured page this session), and chrome.scripting.executeScript with allFrames:true can
+      // end up waiting on that one frame indefinitely before its callback ever fires, hanging
+      // the whole snapshot with no feedback. settled/timeoutId guard against the multi-frame
+      // call and the timeout fallback both firing: whichever happens first wins, and if the
+      // slow call does eventually finish after the timeout already fired, its late result is
+      // just ignored instead of double-processing or double-downloading.
+      let settled = false;
+      const FRAME_CAPTURE_TIMEOUT_MS = 8000;
+      const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.warn("[auto-snapshot] multi-frame capture timed out after", FRAME_CAPTURE_TIMEOUT_MS, "ms -- falling back to the main frame only");
+        chrome.scripting.executeScript({
+          target: { tabId: targetTab.id },
+          func: () => ({ url: location.href, html: document.documentElement.outerHTML })
+        }, (mainFrameResults) => {
+          handleFrameResults(mainFrameResults, true);
+        });
+      }, FRAME_CAPTURE_TIMEOUT_MS);
+
       chrome.scripting.executeScript({
         target: { tabId: targetTab.id, allFrames: true },
         func: () => ({ url: location.href, html: document.documentElement.outerHTML })
       }, (results) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        handleFrameResults(results, false);
+      });
+
+      function handleFrameResults(results, isTimeoutFallback) {
         if (chrome.runtime.lastError) {
           console.error("Snapshot script injection error:", chrome.runtime.lastError.message);
           if (callback) callback(false);
@@ -253,8 +282,11 @@ export function captureSnapshot(callback, specificTabId) {
             r.result.html
           )
           .join('\n\n');
+        const fallbackNote = isTimeoutFallback
+          ? "\n     NOTE: multi-frame capture timed out (a frame likely never finished loading -- e.g. a reCAPTCHA iframe); this is a main-frame-only fallback capture."
+          : "";
         const annotatedHtml =
-          `<!-- Stream Recorder snapshot (all frames)\n     Top URL: ${pageUrl}\n     Title: ${pageTitle}\n     Captured: ${capturedAt}\n     Frames captured: ${frames.length}\n-->\n` +
+          `<!-- Stream Recorder snapshot (all frames)\n     Top URL: ${pageUrl}\n     Title: ${pageTitle}\n     Captured: ${capturedAt}\n     Frames captured: ${frames.length}${fallbackNote}\n-->\n` +
           combined;
         try {
           const timestamp = timestampForFilename();
@@ -349,7 +381,7 @@ export function captureSnapshot(callback, specificTabId) {
           expectingSnapshotFilename = null;
           if (callback) callback(false);
         }
-      });
+      }
     });
   }
 

@@ -1,4 +1,5 @@
 // screenshot.js - Screenshot & snapshot capture
+
 import { state, scheduleSave, slugifyUrlForFilename, timestampForFilename } from './state.js';
 import { CONFIG } from './config.js';
 import { isYTSSite, isArabicMovieSite } from './site-detection.js';
@@ -36,26 +37,26 @@ function doCapture(tabId, callback) {
       if (callback) callback(null);
       return;
     }
-    
+
     chrome.tabs.captureVisibleTab(tabId, { format: 'png' }, (dataUrl) => {
       if (chrome.runtime.lastError) {
         console.warn('Screenshot failed:', chrome.runtime.lastError.message);
         if (callback) callback(null);
         return;
       }
-      
+
       const screenshot = {
         timestamp: Date.now(),
         dataUrl: dataUrl,
         tabId: tabId
       };
-      
+
       const s = state;
       s.screenshots.push(screenshot);
       if (s.screenshots.length > CONFIG.MAX_SCREENSHOTS) {
         s.screenshots = s.screenshots.slice(-CONFIG.MAX_SCREENSHOTS);
       }
-      
+
       if (s.recording) {
         s.actions.push({
           timestamp: Date.now(),
@@ -64,7 +65,7 @@ function doCapture(tabId, callback) {
         });
         scheduleSave();
       }
-      
+
       if (callback) callback(screenshot);
     });
   });
@@ -75,7 +76,7 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
   try {
     const url = new URL(pageUrl);
     let name = '';
-    
+
     // Try to use page title first (cleaned)
     if (pageTitle && pageTitle.length > 0) {
       let cleanTitle = pageTitle
@@ -87,16 +88,16 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
         .replace(/\s*[|:]\s*\u0627\u064a\u062c\u064a\s*\u062f\u064a\u062f\s*/g, '')
         .replace(/[^a-zA-Z0-9\u0600-\u06ff\s-]/g, '')
         .trim();
-      
+
       if (cleanTitle.length > 50) {
         cleanTitle = cleanTitle.substring(0, 50).trim();
       }
-      
+
       if (cleanTitle.length > 2 && !/^\d+$/.test(cleanTitle)) {
         name = cleanTitle;
       }
     }
-    
+
     // If no title, use path
     if (!name || name.length < 2) {
       let path = url.pathname;
@@ -117,21 +118,19 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
         }
       }
     }
-    
+
     name = name
       .replace(/[\\/:*?"<>|]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    
+
     if (!name || name.length < 1) {
       name = 'page';
     }
-    
+
     const timestampStr = timestamp || timestampForFilename();
     const finalName = name.replace(/\s+/g, '-').substring(0, 60);
-    
     return `snapshot_${finalName}_${timestampStr}.html`;
-    
   } catch (e) {
     const slug = slugifyUrlForFilename(pageUrl);
     const timestampStr = timestamp || timestampForFilename();
@@ -142,22 +141,31 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
 // ═══ SNAPSHOT CAPTURE ═══
 export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false) {
   console.log("[auto-snapshot] scheduleAutoSnapshot called for tab", tabId, "delay", delay, "bypassCooldown", bypassCooldown);
-  
+
   chrome.tabs.get(tabId, (tab) => {
     if (chrome.runtime.lastError || !tab) {
       console.warn("[auto-snapshot] tab not available:", chrome.runtime.lastError?.message);
       return;
     }
+
     console.log("[auto-snapshot] tab info:", tab.id, tab.url);
+
     if (delay === undefined || delay === null) delay = 1200;
+
     if (isYTSSite(tab.url) || isArabicMovieSite(tab.url)) {
       delay = 800;
+    } else if (/\/media-issue\/download\//.test(tab.url)) {
+      // [FIX] this gateway page runs an async ad-block check (an IP fetch to api.ipify.org,
+      // then an adblock-signature fetch) before revealing its real download link -- confirmed
+      // directly against a real captured page, where the plain 1200ms default fired before
+      // that check finished, capturing the page mid-gate with no real content visible yet.
+      delay = 3000;
     }
 
     const now = Date.now();
     const lastTime = lastSnapshotTime[tabId] || 0;
     const minInterval = CONFIG.SNAPSHOT_COOLDOWN_MS || 2000;
-    
+
     // [FIX] a form-submit reveal (bypassCooldown=true) is explicit and low-frequency; it must
     // never be silently swallowed by the generic per-tab cooldown, which exists to stop noisy
     // click/mutation spam, not to gate a deliberate user action.
@@ -170,6 +178,7 @@ export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false
       console.log("[auto-snapshot] clearing existing timer for tab", tabId);
       clearTimeout(pendingAutoSnapshotTimers[tabId]);
     }
+
     pendingAutoSnapshotTimers[tabId] = setTimeout(() => {
       delete pendingAutoSnapshotTimers[tabId];
       console.log("[auto-snapshot] debounce elapsed, capturing tab", tabId);
@@ -180,13 +189,14 @@ export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false
 
 export function captureSnapshot(callback, specificTabId) {
   console.log("[auto-snapshot] captureSnapshot called, specificTabId:", specificTabId);
-  
+
   function proceed(targetTab) {
     if (!targetTab) {
       console.warn("No suitable tab found for snapshot (no http/https tab).");
       if (callback) callback(false);
       return;
     }
+
     // [FIX] lastSnapshotTime used to only get recorded deep inside the download-success
     // callback, AFTER two separate async chrome.scripting.executeScript round-trips (title,
     // then the full multi-frame HTML) had already completed -- a real window of hundreds of
@@ -198,8 +208,9 @@ export function captureSnapshot(callback, specificTabId) {
     // starts, closes that window: anything arriving while this capture is still in flight now
     // correctly sees a fresh timestamp and gets cooldown-blocked, the way it was always meant to.
     lastSnapshotTime[targetTab.id] = Date.now();
+
     console.log("[auto-snapshot] capturing tab", targetTab.id, targetTab.url);
-    
+
     // Get page title first
     // [FIX] document.title reflects whatever <title> element is FIRST in the document, per the
     // DOM spec -- but real sites sometimes have more than one <title> tag in <head> (a plugin
@@ -237,6 +248,7 @@ export function captureSnapshot(callback, specificTabId) {
       // just ignored instead of double-processing or double-downloading.
       let settled = false;
       const FRAME_CAPTURE_TIMEOUT_MS = 8000;
+
       const timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -265,46 +277,52 @@ export function captureSnapshot(callback, specificTabId) {
           if (callback) callback(false);
           return;
         }
+
         const frames = (results || []).filter(
           (r) => r && r.result && typeof r.result.html === 'string'
         );
+
         if (!frames.length) {
           console.warn("Snapshot HTML is not a string or no content. Result:", results);
           if (callback) callback(false);
           return;
         }
+
         const pageUrl = targetTab.url || '';
         const capturedAt = new Date().toISOString();
         const combined = frames
           .map(
             (r) =>
-            `<!-- ===== FRAME url=${r.result.url} frameId=${r.frameId} ===== -->\n` +
-            r.result.html
+              `<!-- ===== FRAME url=${r.result.url} frameId=${r.frameId} ===== -->\n` +
+              r.result.html
           )
           .join('\n\n');
+
         const fallbackNote = isTimeoutFallback
           ? "\n     NOTE: multi-frame capture timed out (a frame likely never finished loading -- e.g. a reCAPTCHA iframe); this is a main-frame-only fallback capture."
           : "";
+
         const annotatedHtml =
           `<!-- Stream Recorder snapshot (all frames)\n     Top URL: ${pageUrl}\n     Title: ${pageTitle}\n     Captured: ${capturedAt}\n     Frames captured: ${frames.length}${fallbackNote}\n-->\n` +
           combined;
+
         try {
           const timestamp = timestampForFilename();
           const filename = generateSnapshotFilename(pageUrl, pageTitle, timestamp);
-          
-          console.log("[auto-snapshot] Attempting download:", { 
-            filename, 
+
+          console.log("[auto-snapshot] Attempting download:", {
+            filename,
             contentLength: annotatedHtml.length,
             frames: frames.length,
             title: pageTitle
           });
-          
+
           const dataUri = 'data:text/html;charset=utf-8,' + encodeURIComponent(annotatedHtml);
-          
+
           // ═══ FIX: Set the flag BEFORE calling download ═══
           expectingSnapshotFilename = filename;
           console.log("[auto-snapshot] Set expectingSnapshotFilename to:", filename);
-          
+
           chrome.downloads.download({
             url: dataUri,
             filename: filename,
@@ -329,12 +347,12 @@ export function captureSnapshot(callback, specificTabId) {
               if (callback) callback(false);
             } else {
               console.log("[auto-snapshot] Snapshot download initiated:", { filename, downloadId });
-              
+
               if (specificTabId) {
                 lastSnapshotTime[specificTabId] = Date.now();
                 console.log("[auto-snapshot] Recorded snapshot time for tab", specificTabId);
               }
-              
+
               // ═══ FIX: Keep the flag set for longer - onDeterminingFilename needs it ═══
               // The onDeterminingFilename listener runs synchronously when download starts
               // We need to keep the flag set until the filename is determined
@@ -343,7 +361,7 @@ export function captureSnapshot(callback, specificTabId) {
                 expectingSnapshotFilename = null;
                 console.log("[auto-snapshot] Cleared expectingSnapshotFilename (after 3s)");
               }, 3000);
-              
+
               // Check download status after a moment
               setTimeout(() => {
                 chrome.downloads.search({ id: downloadId }, (results) => {
@@ -372,7 +390,7 @@ export function captureSnapshot(callback, specificTabId) {
                   }
                 });
               }, 1500);
-              
+
               if (callback) callback(true);
             }
           });

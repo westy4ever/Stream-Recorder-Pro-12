@@ -80,6 +80,7 @@ function showRecordingIndicator() {
     font-weight: bold; cursor: move; user-select: none;
     display: flex; align-items: center; gap: 6px; padding: 6px 8px;
   `;
+
   if (savedPos && typeof savedPos.top === 'number' && typeof savedPos.left === 'number') {
     indicatorElement.style.top = savedPos.top + 'px';
     indicatorElement.style.left = savedPos.left + 'px';
@@ -90,6 +91,7 @@ function showRecordingIndicator() {
 
   const label = document.createElement('span');
   label.id = 'stream-recorder-indicator-label';
+
   const minimizeBtn = document.createElement('span');
   minimizeBtn.id = 'stream-recorder-indicator-toggle';
   minimizeBtn.title = 'Minimize / restore';
@@ -110,6 +112,7 @@ function showRecordingIndicator() {
     }
     try { sessionStorage.setItem(INDICATOR_MIN_KEY, minimized ? '1' : '0'); } catch (e) {}
   }
+
   applyMinimizedState(savedMinimized);
 
   minimizeBtn.addEventListener('click', (e) => {
@@ -189,7 +192,11 @@ function isYTSSite() {
 // ═══ ENHANCED: Detect streaming sites ═══
 function isStreamingSite() {
   const hostname = window.location.hostname;
-  return /egydead|tv10\.egydead|topcinema|faselhd|shahid|shaheed|akwam|arabseed/.test(hostname);
+  // [FIX] "shahid" (single i) never matched real mirror spellings like sshahiid4u.net
+  // (double i) -- confirmed directly, this domain was silently classified as 'unknown'
+  // site type, skipping every special-case detection path. shahi+d matches both
+  // shahid and shahiid.
+  return /egydead|tv10\.egydead|topcinema|faselhd|shahi+d|shaheed|akwam|arabseed/.test(hostname);
 }
 
 // ═══ ENHANCED: Detect site type ═══
@@ -312,7 +319,7 @@ function getPageState() {
       viewportHeight: window.innerHeight,
       pageLoad: pageLoadCount
     };
-    
+
     if (isArabicMovieSite()) {
       state.siteType = 'arabic_movie';
       const movieItems = document.querySelectorAll('a[href*="/watch/"]');
@@ -369,7 +376,7 @@ function getPageState() {
         state.movieTitle = detailItems[0]?.textContent?.trim() || '';
       }
     }
-    
+
     return state;
   } catch (e) {
     return { url: window.location.href, siteType: 'unknown' };
@@ -379,16 +386,16 @@ function getPageState() {
 // ═══ ARABIC MOVIE EXTRACTION ═══
 function extractArabicMovies() {
   if (!isArabicMovieSite()) return [];
-  
+
   const movies = [];
   const links = document.querySelectorAll('a[href*="/watch/"]');
-  
+
   for (const link of links) {
     const text = link.textContent || '';
     const href = link.href || '';
-    
+
     if (text.includes('الصفحة الرئيسية') || text.includes('أفلام')) continue;
-    
+
     const patterns = {
       rating: /(\d+\.\d+)/,
       quality: /(WEB-DL|HDCAM|BluRay|WEBRip|DVD|TS)/i,
@@ -396,12 +403,12 @@ function extractArabicMovies() {
       year: /\b(19|20)\d{2}\b/,
       title: /فيلم\s+(.+?)\s+(?:مترجم|اون لاين|جديد|202\d|201\d|199\d|200\d)/
     };
-    
+
     const rating = text.match(patterns.rating)?.[1] || '';
     const quality = text.match(patterns.quality)?.[1] || '';
     const genre = text.match(patterns.genre)?.[1] || '';
     const year = text.match(patterns.year)?.[0] || '';
-    
+
     let title = '';
     const titleMatch = text.match(patterns.title);
     if (titleMatch) {
@@ -414,9 +421,9 @@ function extractArabicMovies() {
         title = yearIndex > 0 ? part.substring(0, yearIndex).trim() : part;
       }
     }
-    
+
     title = title.replace(/مترجم$/, '').replace(/اون لاين$/, '').replace(/جديد$/, '').trim();
-    
+
     if (title && href) {
       movies.push({
         title,
@@ -429,14 +436,14 @@ function extractArabicMovies() {
       });
     }
   }
-  
+
   return movies;
 }
 
 // ═══ SAVEFILES EXTRACTION ═══
 function extractSaveFiles() {
   if (!isSaveFilesSite()) return null;
-  
+
   const data = {
     downloadUrl: null,
     metadata: {},
@@ -473,13 +480,13 @@ function extractSaveFiles() {
 // ═══ ENHANCED: Extract streaming site content ═══
 function extractStreamingContent() {
   if (!isStreamingSite()) return null;
-  
+
   const items = [];
   // [FIX] '.movieItem' (no hyphen) is EgyDead's real container class, confirmed against many
   // real captured pages this session -- the old list only had '.movie-item' (with a hyphen),
   // which never matches, so this whole function silently returned [] for every EgyDead page.
   const selectors = ['.movieItem', '.movie-item', '.film-item', '.card', '.poster', '.title', '.browse-movie-wrap'];
-  
+
   for (const selector of selectors) {
     const elements = document.querySelectorAll(selector);
     for (const el of elements) {
@@ -488,7 +495,7 @@ function extractStreamingContent() {
       const poster = el.querySelector('img')?.src || '';
       const link = el.querySelector('a[href*="/movie/"], a[href*="/watch/"], a')?.href || '';
       const category = el.querySelector('.cat_name')?.textContent?.trim() || '';
-      
+
       if (title || poster || link) {
         const item = { title, poster, url: link, type: 'streaming_item' };
         if (category) item.category = category;
@@ -497,7 +504,7 @@ function extractStreamingContent() {
     }
     if (items.length > 0) break;
   }
-  
+
   return items;
 }
 
@@ -514,7 +521,6 @@ function injectWebSocketHook() {
   };
   document.documentElement.appendChild(script);
 }
-
 injectWebSocketHook();
 
 // ═══ SPA OBSERVER ═══
@@ -526,19 +532,19 @@ function initSPADetection() {
     console.log("[SPA] Not a SPA, skipping enhanced navigation tracking");
     return;
   }
-  
+
   console.log("[SPA] SPA detected, enabling enhanced navigation tracking");
-  
+
   spaObserver = new MutationObserver((mutations) => {
     if (!isRecordingActive) return;
-    
+
     let significantChange = false;
     let newContent = false;
     const siteType = detectSiteType();
-    const selectors = siteType === 'arabic_movie' ? ARABIC_SELECTORS : 
-                      siteType === 'yts' ? YTS_SELECTORS : 
+    const selectors = siteType === 'arabic_movie' ? ARABIC_SELECTORS :
+                      siteType === 'yts' ? YTS_SELECTORS :
                       UNIVERSAL_SELECTORS[siteType] || UNIVERSAL_SELECTORS.streaming;
-    
+
     for (const mutation of mutations) {
       if (mutation.type === 'childList') {
         const addedNodes = Array.from(mutation.addedNodes);
@@ -559,8 +565,9 @@ function initSPADetection() {
           }
         }
       }
+
       if (significantChange) break;
-      
+
       if (mutation.type === 'attributes') {
         if (mutation.attributeName === 'style' || mutation.attributeName === 'class') {
           const target = mutation.target;
@@ -571,38 +578,38 @@ function initSPADetection() {
         }
       }
     }
-    
+
     if (significantChange) {
       checkSPAContentChange(newContent);
     }
   });
-  
+
   spaObserver.observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,
     attributeFilter: ['style', 'class', 'data-loaded', 'data-content']
   });
-  
+
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
-  
+
   history.pushState = function(state, title, url) {
     const result = originalPushState.apply(this, arguments);
     handleSPAUrlChange(url || window.location.href);
     return result;
   };
-  
+
   history.replaceState = function(state, title, url) {
     const result = originalReplaceState.apply(this, arguments);
     handleSPAUrlChange(url || window.location.href);
     return result;
   };
-  
+
   window.addEventListener('popstate', () => {
     handleSPAUrlChange(window.location.href);
   });
-  
+
   window.addEventListener('hashchange', () => {
     handleSPAUrlChange(window.location.href);
   });
@@ -611,11 +618,11 @@ function initSPADetection() {
 function checkSPAContentChange(newContent = false) {
   const currentUrl = window.location.href;
   const pageState = getPageState();
-  
+
   if (currentUrl !== lastSPAUrl || newContent) {
     lastSPAUrl = currentUrl;
     spaContentDetected = true;
-    
+
     let data = null;
     if (isArabicMovieSite()) {
       data = extractArabicMovies();
@@ -645,7 +652,7 @@ function checkSPAContentChange(newContent = false) {
         }).catch(() => {});
       }
     }
-    
+
     chrome.runtime.sendMessage({
       type: "spa_navigate",
       url: currentUrl,
@@ -653,7 +660,7 @@ function checkSPAContentChange(newContent = false) {
       pageState: pageState,
       data: data
     }).catch(() => {});
-    
+
     chrome.runtime.sendMessage({
       type: "pageLoaded",
       url: currentUrl
@@ -665,7 +672,7 @@ function handleSPAUrlChange(url) {
   if (url !== lastSPAUrl) {
     lastSPAUrl = url;
     const pageState = getPageState();
-    
+
     chrome.runtime.sendMessage({
       type: "action",
       actionType: "navigate",
@@ -673,7 +680,7 @@ function handleSPAUrlChange(url) {
       selector: "SPA_navigation",
       pageState: pageState
     }).catch(() => {});
-    
+
     chrome.runtime.sendMessage({
       type: "pageLoaded",
       url: url
@@ -687,12 +694,12 @@ let previousUrl = window.location.href;
 function trackPageLoad() {
   pageLoadCount++;
   const currentUrl = window.location.href;
-  
+
   // Only send if URL changed or it's the first load
   if (currentUrl !== previousUrl || pageLoadCount === 1) {
     previousUrl = currentUrl;
     const pageState = getPageState();
-    
+
     chrome.runtime.sendMessage({
       type: "pageLoaded",
       url: currentUrl,
@@ -711,7 +718,7 @@ chrome.runtime.sendMessage({ type: "getRecordingStatus" }, (response) => {
       showRecordingIndicator();
       initSPADetection();
       trackPageLoad();
-      
+
       if (isArabicMovieSite()) {
         setTimeout(() => {
           const movies = extractArabicMovies();
@@ -769,23 +776,22 @@ document.addEventListener('click', (event) => {
   const tagName = target.tagName.toLowerCase();
   const interactiveTags = ['a', 'button', 'input', 'video', 'source'];
   const isRoleButton = typeof target.matches === 'function' && target.matches('div[role="button"]');
-  
+
   if (interactiveTags.includes(tagName) || isRoleButton ||
       target.closest('a, button, div[role="button"], .play-button, .vjs-big-play-button, .magnet-btn, .play-torrent, .mode-btn, .sidebar-item, .page-btn, .torrent-card, .copy-hash')) {
+
     const selector = getSelector(target);
     const pageState = getPageState();
-    
     const anchor = tagName === 'a' ? target : target.closest('a');
     const href = anchor ? anchor.href : '';
     const downloadAttr = anchor && anchor.hasAttribute('download')
       ? (anchor.getAttribute('download') || true) : null;
-    
     const isDownload = href && (
       href.includes('savefiles.com/v/') ||
       href.match(/\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg)(\?|$)/i) ||
       anchor?.hasAttribute('download')
     );
-    
+
     let data = null;
     if (isSaveFilesSite()) {
       data = extractSaveFiles();
@@ -794,7 +800,7 @@ document.addEventListener('click', (event) => {
     } else if (isStreamingSite()) {
       data = extractStreamingContent();
     }
-    
+
     // Send click event
     chrome.runtime.sendMessage({
       type: "action",
@@ -808,7 +814,7 @@ document.addEventListener('click', (event) => {
       pageState: pageState,
       data: data
     }).catch(() => {});
-    
+
     // Take screenshot on download link click
     if (isDownload && isRecordingActive) {
       chrome.runtime.sendMessage({
@@ -824,6 +830,7 @@ document.addEventListener('submit', (event) => {
   const data = {};
   new FormData(form).forEach((value, key) => { data[key] = value; });
   const pageState = getPageState();
+
   chrome.runtime.sendMessage({
     type: "action",
     actionType: "submit",

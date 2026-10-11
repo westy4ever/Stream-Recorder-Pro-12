@@ -6,16 +6,53 @@
   let MAX_BODY_CHARS = 500000;
   const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
 
+  // [FIX] confirmed directly: isRecordingActive starts false and only becomes
+  // known once this "stream-recorder-control" message arrives -- but that
+  // requires an async round-trip (content.js -> chrome.runtime.sendMessage ->
+  // background service worker -> response -> postMessage back into this page).
+  // A React/SPA site's own initial API calls (its listing/detail JSON fetches)
+  // can easily fire before that round-trip completes, especially if the
+  // service worker needs to wake up -- and since the old code bailed out
+  // immediately whenever isRecordingActive was still false, those early,
+  // often most-important responses were silently lost every time, even
+  // though recording was genuinely on by the time the page loaded. networkLog
+  // (captured separately, in the background script, gated on its own
+  // already-current state) never had this problem, which is why it worked
+  // while xhrBodies came back completely empty for exactly these calls.
+  // Fix: track whether the recording state is known yet, SEPARATELY from
+  // what it is. While unknown, still do the capture work and hold the
+  // payload in a small, bounded buffer instead of discarding it outright;
+  // once the real state arrives, flush the buffer if recording turned out
+  // to be on, or drop it if not. Only bail out early once the state is
+  // actually KNOWN to be off -- never while it's merely not-yet-known.
   let isRecordingActive = false;
+  let recordingStateKnown = false;
+  const MAX_PENDING_BUFFER = 50;
+  const pendingBuffer = [];
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== "stream-recorder-control") return;
     isRecordingActive = !!data.recording;
+    recordingStateKnown = true;
     if (data.maxBodySize) {
       MAX_BODY_CHARS = Math.max(1000, parseInt(data.maxBodySize, 10) * 1024);
     }
+    if (isRecordingActive && pendingBuffer.length) {
+      for (const buffered of pendingBuffer) post(buffered);
+    }
+    pendingBuffer.length = 0;
   });
+
+  function postOrBuffer(payload) {
+    if (recordingStateKnown) {
+      if (isRecordingActive) post(payload);
+      return;
+    }
+    pendingBuffer.push(payload);
+    if (pendingBuffer.length > MAX_PENDING_BUFFER) pendingBuffer.shift();
+  }
 
   function post(payload) {
     try {
@@ -165,7 +202,7 @@
       const startedAt = Date.now();
       return originalFetch.apply(this, args).then((response) => {
         try {
-          if (!isRecordingActive) return response;
+          if (recordingStateKnown && !isRecordingActive) return response;
           const reqInput = args[0];
           const reqInit = args[1];
           const url = response.url || (typeof reqInput === "string" ? reqInput : (reqInput && reqInput.url) || "");
@@ -204,9 +241,9 @@
                   contentType: contentType,
                   jsonData: jsonData
                 };
-                post(payload);
+                postOrBuffer(payload);
               } else {
-                post({ url, method, status: response.status, timestamp: startedAt, body, truncated, via: "fetch" });
+                postOrBuffer({ url, method, status: response.status, timestamp: startedAt, body, truncated, via: "fetch" });
               }
             }).catch(() => {});
           }
@@ -232,7 +269,7 @@
       const startedAt = Date.now();
       this.addEventListener("load", function () {
         try {
-          if (!isRecordingActive) return;
+          if (recordingStateKnown && !isRecordingActive) return;
           const rt = this.responseType;
           if (rt !== "" && rt !== "text" && rt !== "json") return;
           const lenHeader = this.getResponseHeader && this.getResponseHeader("content-length");
@@ -270,9 +307,9 @@
               contentType: contentType,
               jsonData: jsonData
             };
-            post(payload);
+            postOrBuffer(payload);
           } else {
-            post({ url, method, status: this.status, timestamp: startedAt, body, truncated, via: "xhr" });
+            postOrBuffer({ url, method, status: this.status, timestamp: startedAt, body, truncated, via: "xhr" });
           }
         } catch (e) { /* ignore */ }
       });
@@ -289,7 +326,12 @@
       instance.__srSetupWrapped = true;
       instance.setup = function (config) {
         try {
-          if (isRecordingActive) {
+          // [FIX] same race condition as the fetch/XHR hooks above, same
+          // fix: a player's setup() call can easily fire before the
+          // async recording-state signal arrives, especially right on
+          // page load -- confirmed as the same isRecordingActive-gated,
+          // immediate-bail pattern, applied consistently here too.
+          if (!recordingStateKnown || isRecordingActive) {
             let streamUrls = [];
             if (config && config.file) {
               const urls = extractStreamUrlsFromText(config.file);
@@ -303,7 +345,7 @@
                 }
               }
             }
-            post({ 
+            postOrBuffer({ 
               url: location.href, 
               method: "JWPLAYER_SETUP", 
               status: 200, 
@@ -362,9 +404,10 @@
     const originalLoadSource = HlsCtor.prototype.loadSource;
     HlsCtor.prototype.loadSource = function (url) {
       try {
-        if (isRecordingActive) {
+        // [FIX] same race condition as the fetch/XHR hooks above, same fix.
+        if (!recordingStateKnown || isRecordingActive) {
           const streamUrls = extractStreamUrlsFromText(url);
-          post({ 
+          postOrBuffer({ 
             url: location.href, 
             method: "HLSJS_LOADSOURCE", 
             status: 200, 
@@ -396,7 +439,8 @@
       instance.__srSrcWrapped = true;
       instance.src = function(source) {
         try {
-          if (isRecordingActive) {
+          // [FIX] same race condition as the fetch/XHR hooks above, same fix.
+          if (!recordingStateKnown || isRecordingActive) {
             let streamUrls = [];
             if (typeof source === 'string') {
               streamUrls = extractStreamUrlsFromText(source);
@@ -411,7 +455,7 @@
                 }
               }
             }
-            post({ 
+            postOrBuffer({ 
               url: location.href, 
               method: "VIDEOJS_SRC", 
               status: 200, 
@@ -445,7 +489,12 @@
 
   // ═══ YTS DATA DETECTION ═══
   function detectYTSDataLoad() {
-    if (!isRecordingActive) return;
+    // [FIX] same race condition as the fetch/XHR hooks above, same fix --
+    // this is observer-triggered and could in principle re-fire later
+    // once recording state is known, but for a site that only populates
+    // its DOM once on load, the first (and only) call here could easily
+    // land before that state arrives, same as every other hook.
+    if (recordingStateKnown && !isRecordingActive) return;
     const movieContainers = document.querySelectorAll(
       '.movie-list, .film-grid, .movie-grid, .movies-list, .browse-movies, .content-wrapper, .browse-movie-wrap, .torrent-grid, .grid, .modal-body'
     );
@@ -464,24 +513,34 @@
             movie.querySelectorAll('a[href*="magnet:"], a[href*=".torrent"], .magnet-btn, .play-torrent').forEach(t => {
               torrents.push({ url: t.href || '', text: t.textContent?.trim() || '' });
             });
+            // [FIX] this used to attach seeds/size/source to movieData[movieData.length - 1]
+            // BEFORE this movie's own entry had been pushed -- meaning it always attached to
+            // the PREVIOUS movie in the loop instead of itself. Confirmed directly with a
+            // 3-item simulation: movie A's stats landed on... nothing (shifted forward);
+            // movie B got movie A's stats meant for a different card entirely; the actual
+            // stats for the LAST movie in any list were dropped completely, since there was
+            // no next iteration to (wrongly) attach them. Every torrent-card's displayed
+            // seed/size/source would have been for the wrong movie. Computed here, alongside
+            // this movie's own data, and attached directly to the object being pushed instead
+            // of relying on a fragile "last pushed item" index lookup at all.
+            let seeds = '', size = '', source = '';
             if (movie.classList && movie.classList.contains('torrent-card')) {
-              const seeds = movie.querySelector('.torrent-stat.seeds, .torrent-stat .seeds')?.textContent?.trim() || '';
-              const size = movie.querySelector('.torrent-stat.size, .torrent-stat .size')?.textContent?.trim() || '';
-              const source = movie.querySelector('.torrent-source')?.textContent?.trim() || '';
-              if (seeds || size || source) {
-                if (movieData.length > 0) {
-                  movieData[movieData.length - 1].seeds = seeds;
-                  movieData[movieData.length - 1].size = size;
-                  movieData[movieData.length - 1].source = source;
-                }
-              }
+              seeds = movie.querySelector('.torrent-stat.seeds, .torrent-stat .seeds')?.textContent?.trim() || '';
+              size = movie.querySelector('.torrent-stat.size, .torrent-stat .size')?.textContent?.trim() || '';
+              source = movie.querySelector('.torrent-source')?.textContent?.trim() || '';
             }
             if (title || torrents.length > 0) {
-              movieData.push({ title, year, quality, poster, link, torrents });
+              const entry = { title, year, quality, poster, link, torrents };
+              if (seeds || size || source) {
+                entry.seeds = seeds;
+                entry.size = size;
+                entry.source = source;
+              }
+              movieData.push(entry);
             }
           });
           if (movieData.length > 0) {
-            post({ 
+            postOrBuffer({ 
               url: location.href, 
               method: 'YTS_DATA_LOAD', 
               status: 200, 

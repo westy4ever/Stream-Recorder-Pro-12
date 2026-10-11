@@ -1,11 +1,13 @@
 // hls-analyzer.js - HLS Playlist Analyzer
 import { state } from './state.js';
 
-export function analyzeHLSPlaylist(playlistUrl, playlistContent) {
-  if (!playlistContent) {
-    return analyzeHLSFromUrl(playlistUrl);
-  }
-
+// [FIX] this used to be the exported analyzeHLSPlaylist() itself, returning a plain,
+// synchronous object here but a Promise from the playlistContent-missing branch below --
+// any caller had to know in advance which case it was in to handle the result correctly
+// (e.g. `result.type` silently reads undefined if result turns out to be a Promise instead
+// of the object it looks like). The exported function below now always returns a Promise,
+// so every caller can uniformly await/.then() it regardless of whether content was passed in.
+function analyzeHLSPlaylistSync(playlistUrl, playlistContent) {
   const analysis = {
     url: playlistUrl,
     type: 'unknown',
@@ -17,11 +19,10 @@ export function analyzeHLSPlaylist(playlistUrl, playlistContent) {
   };
 
   const lines = playlistContent.split('\n');
-  let currentVariant = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    
+
     if (line.startsWith('#EXT-X-STREAM-INF')) {
       analysis.isMaster = true;
       analysis.type = 'master';
@@ -65,10 +66,20 @@ export function analyzeHLSPlaylist(playlistUrl, playlistContent) {
   }
 
   if (analysis.isMaster && analysis.variants.length > 0) {
+    // [FIX] .sort() mutates the array it's called on IN PLACE -- this used to sort
+    // analysis.variants directly just to read off the first (best) element, silently
+    // destroying the variants' original, as-parsed playlist order as a side effect of
+    // merely computing a summary field. Confirmed directly: generateQualityReport()'s own
+    // "VARIANT DETAILS" section iterates analysis.variants and would show them in this
+    // silently-reordered sequence, not the order they actually appeared in the real
+    // playlist. findBestQuality() elsewhere in this same file already correctly sorts a
+        // spread COPY instead for exactly this reason; this matches that same, already-proven
+    // pattern instead of mutating analysis.variants.
+    const sortedByRank = [...analysis.variants].sort((a, b) => a.rank - b.rank);
     analysis.summary = {
       totalVariants: analysis.variants.length,
       qualities: [...new Set(analysis.variants.map(v => v.quality))],
-      bestQuality: analysis.variants.sort((a, b) => a.rank - b.rank)[0] || null
+      bestQuality: sortedByRank[0] || null
     };
   }
 
@@ -81,6 +92,13 @@ export function analyzeHLSPlaylist(playlistUrl, playlistContent) {
   }
 
   return analysis;
+}
+
+export function analyzeHLSPlaylist(playlistUrl, playlistContent) {
+  if (!playlistContent) {
+    return analyzeHLSFromUrl(playlistUrl);
+  }
+  return Promise.resolve(analyzeHLSPlaylistSync(playlistUrl, playlistContent));
 }
 
 function parseVariantInfo(line) {
@@ -130,14 +148,14 @@ function resolveUrl(baseUrl, relativeUrl) {
 
 function analyzeHLSFromUrl(url) {
   return new Promise((resolve) => {
-    fetch(url, { 
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
-      } 
+    fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     })
     .then(response => response.text())
     .then(content => {
-      resolve(analyzeHLSPlaylist(url, content));
+      resolve(analyzeHLSPlaylistSync(url, content));
     })
     .catch(() => {
       resolve({ error: 'Failed to fetch playlist' });

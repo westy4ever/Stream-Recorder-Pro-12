@@ -9,6 +9,18 @@ export const pendingAutoSnapshotTimers = {};
 
 // Track last snapshot time per tab to prevent duplicates
 const lastSnapshotTime = {};
+// [NEW] confirmed directly on a real capture: a user clicking through each
+// of ~30 server buttons on the same watch page (the top-level URL never
+// changes -- confirmed against the real userJourney log, every click
+// stayed on the same /watch/ URL) produced a separate, genuinely new
+// snapshot on every single click, since the existing cooldown above is
+// purely time-based (2s default) and real clicks were 8-14+ seconds
+// apart, comfortably clearing it every time. Tracking the URL a tab was
+// last snapshotted at lets scheduleAutoSnapshot() skip a repeat capture
+// of the identical URL, the same way the time-based cooldown already
+// skips a too-soon repeat -- without affecting genuine navigation to a
+// new page, which always produces a different URL.
+const lastSnapshotUrl = {};
 
 // ═══ SCREENSHOT CAPTURE ═══
 export function captureScreenshot(tabId, callback) {
@@ -80,13 +92,43 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
     // Try to use page title first (cleaned)
     if (pageTitle && pageTitle.length > 0) {
       let cleanTitle = pageTitle
-        .replace(/\s*[|:]\s*(EgyDead|Wecima|MyCima|YTS|YIFY|Arabic|Movie|Series|TV|Online|Watch|Stream|HD|1080p|720p|480p|360p)\s*/gi, '')
+        // [FIX] this list only covered a handful of the sites this tool actually targets --
+        // extended with the other real sites seen across this project (Shahid4u/Shaheed4u,
+        // Akwam, Aflaam, AlooyTV, TopCinema, FaselHD, ArabSeed, OnlyFlix, MegaMax, Cima4u,
+        // Cimalek). Also widened the separator character class from [|:] to [|:-], since
+        // "Title - SiteName" (hyphen-separated) is an extremely common real title pattern --
+        // confirmed directly the original pattern never matched it at all. Verified this
+        // doesn't damage a legitimate title that happens to contain its own internal hyphen
+        // or colon (e.g. "Spider-Man: No Way Home"), since none of the listed words appear in
+        // titles like that.
+        .replace(/\s*[|:-]\s*(EgyDead|Wecima|MyCima|YTS|YIFY|Arabic|Movie|Series|TV|Online|Watch|Stream|HD|1080p|720p|480p|360p|Shahid4?u|Shaheed4?u|Akwam|Aflaam|AlooyTV|TopCinema|FaselHD|ArabSeed|OnlyFlix|MegaMax|Cima4u|Cimalek)\s*/gi, '')
         // [FIX] the site-name list above is Latin-only, but real EgyDead titles end with the
         // Arabic transliteration "ايجي ديد" (confirmed on every real page title
         // captured this session), which never matched -- leaving that noise in every filename
         // and eating into the character budget that should go to the actual page name.
         .replace(/\s*[|:]\s*\u0627\u064a\u062c\u064a\s*\u062f\u064a\u062f\s*/g, '')
         .replace(/[^a-zA-Z0-9\u0600-\u06ff\s-]/g, '')
+        .trim();
+
+      // [FIX] confirmed directly on a real page: akwams.org's watch pages
+      // never set a movie-specific <title> at all -- only the site's own
+      // generic Arabic branding ("اكوام - Akwam | مشاهدة افلام و مسلسلات
+      // اون لاين" -- "Akwam, Watch Movies and Series Online"). The site-
+      // name strip above is Latin-only (plus one specific EgyDead
+      // exception), so none of the generic ARABIC noise words in that
+      // branding string ever matched, leaving the whole thing intact,
+      // long enough to pass the length check below, and accepted as a
+      // real title -- every snapshot from that watch page used the same
+      // misleading, generic filename despite being genuinely different
+      // captures. Note: JS regex \b does NOT work correctly for Arabic
+      // script (word-boundary is defined against the ASCII \w class,
+      // which excludes Arabic letters) -- confirmed directly that a \b
+      // version of this pattern silently matched nothing at all. Using
+      // explicit space/start/end boundaries instead, which are confirmed
+      // to work correctly for Arabic text.
+      cleanTitle = cleanTitle
+        .replace(/(^|\s)(مشاهدة|تحميل|فيلم|افلام|مسلسل|مسلسلات|الحلقة|حلقة|مترجم|مترجمة|مدبلج|مدبلجة|اون\s*لاين|أون\s*لاين|اونلاين|بجودة|عالية|كامل|حصريا|اكوام|و)(?=\s|$)/g, ' ')
+        .replace(/\s+/g, ' ')
         .trim();
 
       if (cleanTitle.length > 50) {
@@ -105,7 +147,25 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
         name = 'home';
       } else {
         const parts = path.split('/').filter(p => p && p.length > 0);
-        const lastPart = parts[parts.length - 1] || parts[0] || 'page';
+        // [FIX] confirmed directly: the real fallback URL here ends in
+        // "/watch/" (".../drawn-together-2026-مترجم/watch/"), and this
+        // always took the LAST segment -- "watch" -- not the actual
+        // movie slug before it. Since every watch page on this site ends
+        // the same way, every different movie's watch page would have
+        // collapsed to the same generic "watch" filename, barely better
+        // than the generic-title problem this fallback exists to solve.
+        // The same generic terminal segment shows up across other sites
+        // in this project too (view/play/embed/download). Walking
+        // backwards and skipping these finds the real, descriptive slug
+        // instead.
+        const GENERIC_TERMINAL_SEGMENTS = new Set(['watch', 'view', 'play', 'embed', 'download', 'stream']);
+        let lastPart = parts[parts.length - 1] || parts[0] || 'page';
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (!GENERIC_TERMINAL_SEGMENTS.has(parts[i].toLowerCase())) {
+            lastPart = parts[i];
+            break;
+          }
+        }
         try {
           name = decodeURIComponent(lastPart);
         } catch (e) {
@@ -128,9 +188,36 @@ function generateSnapshotFilename(pageUrl, pageTitle, timestamp) {
       name = 'page';
     }
 
+    // [NEW] snapshot filenames gave no indication of which pagination page
+    // a capture came from -- every page of the same category listing
+    // (e.g. "Action Movies" page 1, 2, 3...) produced an identical-looking
+    // name apart from the timestamp, making it hard to tell them apart
+    // later. Checks the real page=N query param -- verified against the
+    // normal case, MyCima's own "?&page=N" quirk (empty first param,
+    // confirmed real), and pages with no pagination at all (correctly
+    // adds nothing).
+    // [FIX] confirmed directly: the query-string check above never
+    // matches WordPress-style path pagination, which real captures from
+    // cimawebas.com (and likely other WordPress-based sites in this
+    // project) actually use -- e.g. ".../category/.../page/2/", with the
+    // page number in the URL PATH, not a query parameter. url.search was
+    // empty for every one of these real URLs, so no page suffix was ever
+    // added despite the page clearly being page 2, 3, etc. Now also
+    // checks the path for a "/page/N/" segment; the query-string check
+    // still runs first so the existing MyCima/normal cases are unaffected.
+    let pageSuffix = '';
+    try {
+      const queryMatch = url.search.match(/[?&]page=(\d+)/i);
+      const pathMatch = url.pathname.match(/\/page\/(\d+)\/?(?:$|\/)/i);
+      const pageNum = queryMatch ? queryMatch[1] : (pathMatch ? pathMatch[1] : null);
+      if (pageNum) {
+        pageSuffix = `_page${pageNum}`;
+      }
+    } catch (e) { /* ignore */ }
+
     const timestampStr = timestamp || timestampForFilename();
     const finalName = name.replace(/\s+/g, '-').substring(0, 60);
-    return `snapshot_${finalName}_${timestampStr}.html`;
+    return `snapshot_${finalName}${pageSuffix}_${timestampStr}.html`;
   } catch (e) {
     const slug = slugifyUrlForFilename(pageUrl);
     const timestampStr = timestamp || timestampForFilename();
@@ -174,6 +261,11 @@ export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false
       return;
     }
 
+    if (!bypassCooldown && lastSnapshotUrl[tabId] && lastSnapshotUrl[tabId] === tab.url) {
+      console.log("[auto-snapshot] 🔁 Skipping duplicate snapshot - same URL as last capture:", tab.url);
+      return;
+    }
+
     if (pendingAutoSnapshotTimers[tabId]) {
       console.log("[auto-snapshot] clearing existing timer for tab", tabId);
       clearTimeout(pendingAutoSnapshotTimers[tabId]);
@@ -208,6 +300,7 @@ export function captureSnapshot(callback, specificTabId) {
     // starts, closes that window: anything arriving while this capture is still in flight now
     // correctly sees a fresh timestamp and gets cooldown-blocked, the way it was always meant to.
     lastSnapshotTime[targetTab.id] = Date.now();
+    lastSnapshotUrl[targetTab.id] = targetTab.url;
 
     console.log("[auto-snapshot] capturing tab", targetTab.id, targetTab.url);
 

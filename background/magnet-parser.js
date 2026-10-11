@@ -20,7 +20,7 @@ export function parseMagnetLink(magnetUrl) {
   };
 
   const params = new URLSearchParams(magnetUrl.replace('magnet:', ''));
-  
+
   const xt = params.get('xt');
   if (xt && xt.startsWith('urn:btih:')) {
     parsed.infoHash = xt.replace('urn:btih:', '');
@@ -51,7 +51,7 @@ export function analyzeMagnetLinks() {
   const s = state;
   const xhrBodies = s.xhrBodies || [];
   const networkLog = s.networkLog || [];
-  
+
   const magnets = [];
   const seen = new Set();
 
@@ -71,8 +71,16 @@ export function analyzeMagnetLinks() {
 
   for (const body of xhrBodies) {
     if (body.body) {
-      const magnetMatches = body.body.match(/magnet:\?xt=urn:btih:[a-fA-F0-9]+[^\s"']*/g) || [];
+      // [FIX] this used to require the literal sequence "magnet:?xt=urn:btih:" -- i.e. only
+      // matched when xt happened to be the FIRST query parameter. Confirmed directly: a
+      // magnet link with any other parameter first (e.g. "magnet:?dn=Movie&xt=urn:btih:...",
+      // which the magnet URI spec permits -- it never mandates parameter order) was silently
+      // missed entirely, 0 matches. Now matches the whole magnet: URI regardless of parameter
+      // order, then separately confirms it actually contains a valid xt=urn:btih: info-hash
+      // before accepting it (so a stray "magnet:?something-unrelated" still gets excluded).
+      const magnetMatches = body.body.match(/magnet:\?[^\s"']*/g) || [];
       for (const match of magnetMatches) {
+        if (!match.includes('xt=urn:btih:')) continue;
         if (!seen.has(match)) {
           seen.add(match);
           const parsed = parseMagnetLink(match);
@@ -95,7 +103,7 @@ export function generateTorrentMetadata(magnetLink) {
 
   const s = state;
   const xhrBodies = s.xhrBodies || [];
-  
+
   for (const body of xhrBodies) {
     if (body.body && body.body.includes(parsed.infoHash)) {
       try {
@@ -135,7 +143,7 @@ export function generateTorrentMetadata(magnetLink) {
   for (const tracker of parsed.trackers) {
     enhancedMagnet += `&tr=${encodeURIComponent(tracker)}`;
   }
-  
+
   return {
     ...parsed,
     enhancedMagnet: enhancedMagnet,

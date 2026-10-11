@@ -185,6 +185,15 @@ const EXPORT_SECTIONS = [
   { key: 'actions', label: 'actions' },
   { key: 'userJourney', label: 'userJourney' },
   { key: 'contentPipeline', label: 'contentPipeline' },
+  // [FIX] screenshots were entirely missing from this list -- meaning the "Split" export
+  // scope (built specifically for sessions too large for one file) silently dropped every
+  // screenshot completely, while the regular "all" JSON export correctly included them. This
+  // matters more now that screenshots carry their full image data instead of a 100-character
+  // truncated stub (see the getRecordingData/getScreenshots fix in message-handlers.js) --
+  // full-size screenshots are exactly the kind of data that makes a session large enough to
+  // need splitting in the first place. The existing chunking logic below already handles any
+  // array-valued section generically, so this needed no other change to work correctly.
+  { key: 'screenshots', label: 'screenshots' },
 ];
 
 // Returns a smaller data object containing only what the chosen scope asks for. "all" and
@@ -212,14 +221,62 @@ function sizeLabel(str) {
   return bytes + ' B';
 }
 
-function downloadBlob(content, filename, mimeType) {
+// [FIX] every download in this file called URL.revokeObjectURL(url)
+// immediately inside chrome.downloads.download()'s own callback -- but
+// that callback fires the moment the download STARTS (a downloadId gets
+// assigned), not when Chrome has actually finished reading the blob's
+// data. Revoking the object URL in that window can make the blob's
+// content inaccessible mid-transfer -- confirmed directly: real,
+// saved files in the user's actual Downloads folder came out named like
+// "efccf81a-3cb6-4ff8-984b-d391ad3e6e57.txt", which is exactly the
+// random-UUID shape Chrome falls back to generating from the blob: URL
+// itself when the originally-specified filename can't be applied. Now
+// waits for chrome.downloads.onChanged to report the download has
+// actually reached a final state (complete/interrupted) before
+// revoking, with saveAs accepted as a parameter so every call site below
+// can share this one, fixed implementation instead of duplicating the
+// broken pattern.
+function downloadBlob(content, filename, mimeType, saveAs = false) {
   return new Promise((resolve) => {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
-    chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
-      const ok = !chrome.runtime.lastError;
-      URL.revokeObjectURL(url);
-      resolve({ ok, filename, error: chrome.runtime.lastError?.message });
+    let settled = false;
+
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+      resolve(result);
+    }
+
+    chrome.downloads.download({ url, filename, saveAs }, (downloadId) => {
+      if (chrome.runtime.lastError || !downloadId) {
+        finish({ ok: false, filename, downloadId: null, error: chrome.runtime.lastError?.message });
+        return;
+      }
+      function onChanged(delta) {
+        if (delta.id !== downloadId) return;
+        if (delta.state && delta.state.current && delta.state.current !== "in_progress") {
+          chrome.downloads.onChanged.removeListener(onChanged);
+          const complete = delta.state.current === "complete";
+          finish({
+            ok: complete, filename, downloadId,
+            error: complete ? undefined : (delta.error && delta.error.current) || delta.state.current
+          });
+        }
+      }
+      chrome.downloads.onChanged.addListener(onChanged);
+      // Safety net: onChanged should always fire, but if it somehow never
+      // does, don't leak the blob's object URL forever across many
+      // exports -- resolve as success after a generous delay instead of
+      // hanging indefinitely (the download itself already started fine,
+      // per the lack of a lastError above).
+      setTimeout(() => {
+        if (!settled) {
+          chrome.downloads.onChanged.removeListener(onChanged);
+          finish({ ok: true, filename, downloadId });
+        }
+      }, 30000);
     });
   });
 }
@@ -264,6 +321,11 @@ async function doSplitExport(data, format) {
   const mimeType = isMarkdown ? 'text/markdown' : 'application/json';
   const manifest = [];
   let done = 0;
+  // [FIX] same missing-timestamp issue as the main export buttons, same fix -- computed once
+  // here and reused for every file in this split-export run (including the manifest) so they
+  // all stay grouped together as clearly belonging to the same session, rather than each
+  // getting a slightly different value if computed separately partway through the run.
+  const exportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
   const sectionsPresent = EXPORT_SECTIONS.filter(s => {
     const v = data[s.key];
@@ -292,7 +354,7 @@ async function doSplitExport(data, format) {
       const scoped = { [section.key]: chunks[i] };
       const content = isMarkdown ? exportAsMarkdown(scoped) : JSON.stringify(scoped, null, 2);
       const partSuffix = multi ? `_part${i + 1}of${chunks.length}` : '';
-      const filename = `stream_recording_${section.label}${partSuffix}.${ext}`;
+      const filename = `stream_recording_${section.label}${partSuffix}_${exportTimestamp}.${ext}`;
       const result = await downloadBlob(content, filename, mimeType);
       manifest.push(`${result.ok ? '✅' : '❌'} ${filename} — ${sizeLabel(content)}${result.error ? ' (' + result.error + ')' : ''}`);
       done++;
@@ -304,10 +366,10 @@ async function doSplitExport(data, format) {
   }
 
   const manifestText = `Stream Recorder Pro — split export manifest\n` +
-    `Generated: ${new Date().toISOString()}\n` +
+    `Generated: ${exportTimestamp}\n` +
     `Max file size target: ${(MAX_CHUNK_BYTES / 1024 / 1024).toFixed(0)} MB per file\n\n` +
     manifest.join('\n') + '\n';
-  await downloadBlob(manifestText, 'stream_recording_MANIFEST.txt', 'text/plain');
+  await downloadBlob(manifestText, `stream_recording_MANIFEST_${exportTimestamp}.txt`, 'text/plain');
 
   progressFill.style.width = "100%";
   statusDiv.innerText = `✅ Split export done: ${total} file(s) + manifest`;
@@ -336,29 +398,35 @@ function doExport(format) {
     const data = getScopedData(currentRecordingData, scope);
     let content, filename, mimeType;
     const scopeSuffix = (scope && scope !== 'all') ? `_${scope}` : '';
+    // [FIX] every export from this button used to suggest the exact same filename
+    // ("stream_recording.json", etc.) regardless of when or which session it came from --
+    // confirmed directly: exporting two separate recording sessions (e.g. a movies pass and
+    // a later series pass) both defaulted to identical filenames, risking a silent overwrite
+    // if not manually renamed in the save dialog every single time, and giving no way to
+    // tell files apart later even when renamed carefully. options.js's own exports
+    // (sr_data_*, sr_settings_*) already include a timestamp; this brings the main export
+    // buttons in line with that same, already-established convention.
+    const exportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
     
     switch (format) {
       case 'csv':
         content = exportAsCSV(data);
-        // ═══ FIX: Use proper filename ═══
-        filename = `stream_recording${scopeSuffix}.csv`;
+        filename = `stream_recording${scopeSuffix}_${exportTimestamp}.csv`;
         mimeType = 'text/csv';
         break;
       case 'har':
         content = JSON.stringify(exportAsHAR(data), null, 2);
-        filename = `stream_recording${scopeSuffix}.har`;
+        filename = `stream_recording${scopeSuffix}_${exportTimestamp}.har`;
         mimeType = 'application/json';
         break;
       case 'markdown':
         content = exportAsMarkdown(data);
-        // ═══ FIX: Use proper filename ═══
-        filename = `stream_recording${scopeSuffix}.md`;
+        filename = `stream_recording${scopeSuffix}_${exportTimestamp}.md`;
         mimeType = 'text/markdown';
         break;
       default:
         content = JSON.stringify(data, null, 2);
-        // ═══ FIX: Use proper filename ═══
-        filename = `stream_recording${scopeSuffix}.json`;
+        filename = `stream_recording${scopeSuffix}_${exportTimestamp}.json`;
         mimeType = 'application/json';
     }
     
@@ -371,19 +439,13 @@ function doExport(format) {
       if (progress >= 90) clearInterval(interval);
     }, 100);
     
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    
-    chrome.downloads.download({
-      url: url,
-      // ═══ FIX: Use the filename variable ═══
-      filename: filename,
-      saveAs: true
-    }, (downloadId) => {
+    // [FIX] now uses the shared, fixed downloadBlob() (see its own comment)
+    // instead of this duplicated, premature-revoke pattern.
+    downloadBlob(content, filename, mimeType, true).then((result) => {
       clearInterval(interval);
       progressFill.style.width = "100%";
-      if (chrome.runtime.lastError) {
-        statusDiv.innerText = `❌ Export ${format} failed: ${chrome.runtime.lastError.message}`;
+      if (!result.ok) {
+        statusDiv.innerText = `❌ Export ${format} failed: ${result.error || "unknown error"}`;
       } else {
         statusDiv.innerText = `✅ Exported ${format.toUpperCase()} as ${filename} (${sizeLabel(content)})`;
         setTimeout(() => {
@@ -392,7 +454,6 @@ function doExport(format) {
           }
         }, 3000);
       }
-      URL.revokeObjectURL(url);
       isExporting = false;
     });
   } catch (e) {
@@ -484,17 +545,16 @@ function exportAsMarkdown(data) {
     md += `## 🎯 Actions\n\n`;
     md += `| # | Time | Type | URL | Selector |\n`;
     md += `|---|------|------|-----|----------|\n`;
-    data.actions.slice(0, 100).forEach((action, i) => {
+    // [FIX] this used to stop after the first 100 actions, silently dropping the rest with
+    // only a one-line "N more actions" note and no actual data -- any recording longer than
+    // 100 actions was never actually complete in this export. Now shows every action.
+    data.actions.forEach((action, i) => {
       const time = new Date(action.timestamp).toLocaleTimeString();
       const type = action.type || 'unknown';
       const url = action.url || action.href || '';
       const selector = action.selector || '';
       md += `| ${i+1} | ${time} | ${type} | ${url} | ${selector} |\n`;
     });
-    if (data.actions.length > 100) {
-      md += `| ... | ... | ... | ... | ... |\n`;
-      md += `| *${data.actions.length - 100} more actions* | | | |\n`;
-    }
     md += '\n';
   }
 
@@ -503,17 +563,14 @@ function exportAsMarkdown(data) {
     md += `## 🌐 Network Requests\n\n`;
     md += `| # | Time | Method | Status | URL |\n`;
     md += `|---|------|--------|--------|-----|\n`;
-    data.networkLog.slice(0, 100).forEach((req, i) => {
+    // [FIX] same 100-item cap as Actions above, same fix -- shows every request now.
+    data.networkLog.forEach((req, i) => {
       const time = new Date(req.timestamp).toLocaleTimeString();
       const method = req.method || 'GET';
       const status = req.statusCode || req.status || '?';
       const url = req.url || '';
       md += `| ${i+1} | ${time} | ${method} | ${status} | ${url} |\n`;
     });
-    if (data.networkLog.length > 100) {
-      md += `| ... | ... | ... | ... | ... |\n`;
-      md += `| *${data.networkLog.length - 100} more requests* | | | |\n`;
-    }
     md += '\n';
   }
 
@@ -528,11 +585,23 @@ function exportAsMarkdown(data) {
       grouped[key].push(body);
     }
     
+    // [FIX] this used to only ever list the first 5 requests per URL group (dropping the
+    // rest with just a "N more" note) and only ever show the response BODY TEXT for the
+    // single LAST request in each group -- if the same endpoint returned genuinely different
+    // data across several hits (a paginated/polling API, say), every earlier response's
+    // actual content was silently never shown at all, only the final one. Now lists every
+    // request in the group, and shows the body text for every DISTINCT body content (not
+    // every individual request -- if several requests to the same URL returned byte-identical
+    // bodies, that content is shown once, noting which request numbers shared it, rather than
+    // repeating the same text block over and over).
+    const RESPONSE_BODY_CHAR_CAP = 8000; // still capped -- a single response can genuinely be
+    // megabytes, and inlining that uncapped would make the whole file unreadable; the JSON
+    // export always has the complete, uncapped body regardless of this cap.
     for (const [url, bodies] of Object.entries(grouped)) {
       md += `### 🔗 ${url}\n\n`;
       md += `| # | Method | Status | Via | Truncated | Time |\n`;
       md += `|---|--------|--------|-----|-----------|------|\n`;
-      bodies.slice(0, 5).forEach((body, i) => {
+      bodies.forEach((body, i) => {
         const method = body.method || 'GET';
         const status = body.status || '?';
         const via = body.via || 'unknown';
@@ -540,28 +609,39 @@ function exportAsMarkdown(data) {
         const time = new Date(body.timestamp).toLocaleTimeString();
         md += `| ${i+1} | ${method} | ${status} | ${via} | ${truncated} | ${time} |\n`;
       });
-      if (bodies.length > 5) {
-        md += `| ... | *${bodies.length - 5} more* | | | |\n`;
-      }
-      
-      const lastBody = bodies[bodies.length - 1];
-      if (lastBody && lastBody.body) {
-        md += `\n**Response Body:**\n`;
+
+      // Group requests within this URL by distinct body content
+      const byContent = new Map();
+      bodies.forEach((body, i) => {
+        if (!body.body) return;
+        if (!byContent.has(body.body)) byContent.set(body.body, []);
+        byContent.get(body.body).push(i + 1);
+      });
+
+      let bodyIndex = 0;
+      for (const [content, requestNumbers] of byContent.entries()) {
+        bodyIndex++;
+        const label = requestNumbers.length > 1
+          ? `Response Body (requests #${requestNumbers.join(', #')} -- identical content)`
+          : `Response Body (request #${requestNumbers[0]})`;
+        md += `\n**${label}:**\n`;
         md += '```json\n';
         try {
-          const parsed = JSON.parse(lastBody.body);
-          md += JSON.stringify(parsed, null, 2).substring(0, 2000);
-          if (JSON.stringify(parsed, null, 2).length > 2000) {
-            md += '\n... (truncated, full in JSON export)';
+          const parsed = JSON.parse(content);
+          const pretty = JSON.stringify(parsed, null, 2);
+          md += pretty.substring(0, RESPONSE_BODY_CHAR_CAP);
+          if (pretty.length > RESPONSE_BODY_CHAR_CAP) {
+            md += '\n... (truncated at ' + RESPONSE_BODY_CHAR_CAP + ' chars, full in JSON export)';
           }
         } catch (e) {
-          md += lastBody.body.substring(0, 2000);
-          if (lastBody.body.length > 2000) {
-            md += '\n... (truncated, full in JSON export)';
+          md += content.substring(0, RESPONSE_BODY_CHAR_CAP);
+          if (content.length > RESPONSE_BODY_CHAR_CAP) {
+            md += '\n... (truncated at ' + RESPONSE_BODY_CHAR_CAP + ' chars, full in JSON export)';
           }
         }
-        md += '\n```\n\n';
+        md += '\n```\n';
       }
+      md += '\n';
     }
   }
 
@@ -609,15 +689,13 @@ function exportAsMarkdown(data) {
     md += `## 🔄 Pipeline Sequence\n\n`;
     md += `| # | Time | Type | Data |\n`;
     md += `|---|------|------|------|\n`;
-    data.contentPipeline.sequence.slice(0, 50).forEach((step, i) => {
+    // [FIX] same 50-item cap pattern as elsewhere in this export, same fix -- shows every step.
+    data.contentPipeline.sequence.forEach((step, i) => {
       const time = new Date(step.timestamp).toLocaleTimeString();
       const type = step.type || 'unknown';
       const dataSummary = step.data ? Object.keys(step.data).join(', ') : '';
       md += `| ${i+1} | ${time} | ${type} | ${dataSummary} |\n`;
     });
-    if (data.contentPipeline.sequence.length > 50) {
-      md += `| ... | *${data.contentPipeline.sequence.length - 50} more* | |\n`;
-    }
     md += '\n';
   }
 
@@ -638,7 +716,11 @@ function exportAsMarkdown(data) {
   const streamUrls = [];
   if (data.networkLog) {
     for (const entry of data.networkLog) {
-      if (entry.url && (entry.url.includes('.m3u8') || entry.url.includes('.mp4') || entry.url.includes('.ts'))) {
+      // [FIX] missed real, confirmed stream URLs that use a .txt extension
+      // instead of .m3u8/.mp4/.ts (e.g. "master.txt", "index-v1-a1.txt" --
+      // both real, captured playlist URLs from the same CDN family). Same
+      // fix applied to message-handlers.js's getStreamLinks handler.
+      if (entry.url && (entry.url.includes('.m3u8') || entry.url.includes('.mp4') || entry.url.includes('.ts') || entry.url.includes('.txt'))) {
         streamUrls.push(entry.url);
       }
     }
@@ -646,7 +728,8 @@ function exportAsMarkdown(data) {
   if (data.xhrBodies) {
     for (const body of data.xhrBodies) {
       if (body.body) {
-        const matches = body.body.match(/https?:\/\/[^\s"']+\.(?:m3u8|mp4|ts)[^\s"']*/g) || [];
+        // [FIX] same missing .txt-extension issue, same fix.
+        const matches = body.body.match(/https?:\/\/[^\s"']+\.(?:m3u8|mp4|ts|txt)[^\s"']*/g) || [];
         streamUrls.push(...matches);
       }
     }
@@ -655,12 +738,11 @@ function exportAsMarkdown(data) {
   if (streamUrls.length > 0) {
     md += `## 🎬 Stream URLs Found (${streamUrls.length})\n\n`;
     const unique = [...new Set(streamUrls)];
-    unique.slice(0, 50).forEach((url, i) => {
+    // [FIX] same 50-item cap pattern as elsewhere in this export, same fix -- shows every
+    // distinct stream URL found.
+    unique.forEach((url, i) => {
       md += `${i+1}. ${url}\n`;
     });
-    if (unique.length > 50) {
-      md += `\n... and ${unique.length - 50} more streams\n`;
-    }
     md += '\n';
   }
 
@@ -1096,16 +1178,9 @@ document.getElementById('genExtractor').addEventListener('click', () => {
       
       // ═══ FIX: Use proper filename ═══
       const filename = `${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_extractor.py`;
-      
-      const blob = new Blob([response.code], { type: 'text/x-python' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: filename,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-      });
+      // [FIX] uses the shared, fixed downloadBlob() instead of the
+      // duplicated, premature-revoke pattern (see its own comment).
+      downloadBlob(response.code, filename, 'text/x-python', true);
       
       statusDiv.innerText = `✅ Python extractor saved as ${filename}`;
     } else {
@@ -1140,16 +1215,9 @@ document.getElementById('genResolver').addEventListener('click', () => {
       // ═══ FIX: Use proper filename ═══
       const safeHost = host.replace(/[^a-zA-Z0-9]/g, '_');
       const filename = `resolve_${safeHost}.py`;
-      
-      const blob = new Blob([response.code], { type: 'text/x-python' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: filename,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-      });
+      // [FIX] uses the shared, fixed downloadBlob() instead of the
+      // duplicated, premature-revoke pattern (see its own comment).
+      downloadBlob(response.code, filename, 'text/x-python', true);
       
       statusDiv.innerText = `✅ Resolver saved as ${filename}`;
     } else {
@@ -1183,18 +1251,36 @@ document.getElementById('exportFullExtractor').addEventListener('click', () => {
       
       // ═══ FIX: Use proper filename ═══
       const filename = `${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_extractor.py`;
+      // [FIX] uses the shared, fixed downloadBlob() instead of the
+      // duplicated, premature-revoke pattern (see its own comment).
+      downloadBlob(response.content, filename, 'text/x-python', true);
+
+      // [NEW] confirmed directly: the generator now also produces a
+      // real, runnable companion test file (test-generator.js, already
+      // wired into its own separate popup button, but never generated
+      // alongside the extractor itself until now) -- download it too
+      // when present, same as the main file.
+      let testNote = '';
+      if (response.testCode && response.testFilename) {
+        downloadBlob(response.testCode, response.testFilename, 'text/x-python', true);
+        testNote = ` + ${response.testFilename}`;
+      }
       
-      const blob = new Blob([response.content], { type: 'text/x-python' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: filename,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-      });
-      
-      statusDiv.innerText = `✅ Complete extractor saved as ${filename}`;
+      // [NEW] confirmed directly: the generator computes real validation
+      // warnings (invalid class names, escaping bugs, unclosed
+      // docstrings, leaked JS booleans) but nothing ever displayed them
+      // to the user -- they were silently dropped at an intermediate
+      // wrapper before even reaching this file. Now that they actually
+      // arrive here, surface them plainly rather than letting a known
+      // problem through with just a plain ✅.
+      const warnings = response.warnings || [];
+      if (warnings.length > 0) {
+        statusDiv.innerText = `⚠️ Saved as ${filename}${testNote} -- ${warnings.length} issue(s) found, check console`;
+        console.warn(`Stream Recorder Pro: ${warnings.length} validation warning(s) for ${filename}:`);
+        for (const w of warnings) console.warn('  -', w);
+      } else {
+        statusDiv.innerText = `✅ Complete extractor saved as ${filename}${testNote}`;
+      }
     } else {
       statusDiv.innerText = '❌ Failed to generate extractor. Check console.';
     }
@@ -1667,16 +1753,9 @@ document.getElementById('generateTests').addEventListener('click', () => {
       
       // ═══ FIX: Use proper filename ═══
       const filename = `test_${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}.py`;
-      
-      const blob = new Blob([response.code], { type: 'text/x-python' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: filename,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-      });
+      // [FIX] uses the shared, fixed downloadBlob() instead of the
+      // duplicated, premature-revoke pattern (see its own comment).
+      downloadBlob(response.code, filename, 'text/x-python', true);
       
       statusDiv.innerText = `✅ Tests saved as ${filename}`;
     } else {
@@ -1730,21 +1809,18 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-// ═══ KEYBOARD SHORTCUT HANDLING ═══
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.shiftKey && e.key === 'S') {
-    e.preventDefault();
-    saveSnapshotBtn.click();
-  }
-  if (e.ctrlKey && e.shiftKey && e.key === 'R') {
-    e.preventDefault();
-    if (!startBtn.disabled) {
-      startBtn.click();
-    } else {
-      stopBtn.click();
-    }
-  }
-});
+// [FIX] this used to also register its own document-level keydown listener for
+// Ctrl+Shift+S / Ctrl+Shift+R, duplicating the SAME shortcuts already declared in
+// manifest.json's "commands" and handled globally by keyboard-shortcuts.js's
+// chrome.commands.onCommand listener. Chrome's commands API fires those globally whenever
+// the browser has focus, including while the extension's own popup is open and focused --
+// so pressing Ctrl+Shift+S while this popup was open fired BOTH the global command (which
+// sends "saveSnapshot" via the background script) AND this local listener (which called
+// saveSnapshotBtn.click(), sending the exact same message a second time) -- two separate
+// snapshot files saved for one key press, since manual saves aren't covered by the
+// auto-snapshot cooldown that only debounces automatic post-navigation captures. Removed
+// entirely: the manifest-declared shortcuts already cover this correctly and globally, so
+// nothing is lost by not also handling it here.
 
 // ═══ HELPERS ═══
 function escHtml(s) {
@@ -1752,5 +1828,5 @@ function escHtml(s) {
 }
 
 function escAttr(s) {
-  return (s || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

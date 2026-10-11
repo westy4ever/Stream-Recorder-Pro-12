@@ -29,7 +29,7 @@ export function findRequestChanges() {
         requestHeaders: entry.requestHeaders || {},
         responseHeaders: entry.responseHeaders || {}
       });
-      
+
       const body = xhrBodies.find(b => b.url === entry.url);
       if (body) {
         groups[key].bodySamples.push({
@@ -55,7 +55,7 @@ export function findRequestChanges() {
     const firstParams = first.params || {};
     const lastParams = last.params || {};
     const allKeys = new Set([...Object.keys(firstParams), ...Object.keys(lastParams)]);
-    
+
     for (const keyName of allKeys) {
       if (firstParams[keyName] !== lastParams[keyName]) {
         changes.push({
@@ -70,8 +70,17 @@ export function findRequestChanges() {
     const firstHeaders = first.requestHeaders || {};
     const lastHeaders = last.requestHeaders || {};
     const allHeaders = new Set([...Object.keys(firstHeaders), ...Object.keys(lastHeaders)]);
-    
+
+    // [FIX] this used to compare and report EVERY request header with no exclusions at all --
+    // confirmed directly: a real Cookie header (session IDs, auth tokens) almost always
+    // differs between requests (sessions rotate, are per-request, etc.), so the raw cookie
+    // VALUE was printed straight into the generated diff report text every time -- exactly
+    // the kind of report a user might save or share while building an extractor. Same class
+    // of leak already found and fixed in sequence-recorder.js's replay-script generator this
+    // session, just with no exclusion list at all here rather than one missing one entry.
+    const sensitiveHeaders = ['cookie', 'set-cookie', 'authorization'];
     for (const header of allHeaders) {
+      if (sensitiveHeaders.includes(header.toLowerCase())) continue;
       if (firstHeaders[header] !== lastHeaders[header]) {
         changes.push({
           type: 'header_change',
@@ -84,7 +93,7 @@ export function findRequestChanges() {
 
     const firstBody = group.bodySamples.find(b => b.url === first.url);
     const lastBody = group.bodySamples.find(b => b.url === last.url);
-    
+
     if (firstBody && lastBody) {
       const bodyDiff = compareBodies(firstBody.body, lastBody.body);
       if (bodyDiff.changed) {
@@ -116,7 +125,7 @@ export function findRequestChanges() {
 function compareBodies(body1, body2) {
   if (!body1 && !body2) return { changed: false };
   if (!body1 || !body2) return { changed: true };
-  
+
   try {
     const json1 = JSON.parse(body1);
     const json2 = JSON.parse(body2);
@@ -131,13 +140,13 @@ function compareBodies(body1, body2) {
 export function generateDiffReport() {
   const diffs = findRequestChanges();
   let report = '=== REQUEST/RESPONSE DIFF REPORT ===\n\n';
-  
+
   for (const diff of diffs) {
     report += `📌 ${diff.endpoint}\n`;
     report += `   URL: ${diff.url}\n`;
     report += `   Requests: ${diff.requestCount}\n`;
     report += `   Changes: ${diff.changes.length}\n`;
-    
+
     for (const change of diff.changes) {
       switch (change.type) {
         case 'param_change':
@@ -154,6 +163,6 @@ export function generateDiffReport() {
     }
     report += '\n';
   }
-  
+
   return report;
 }

@@ -29,15 +29,25 @@ export function analyzeCookies() {
     // Analyze request headers
     for (const [key, value] of Object.entries(headers)) {
       const lowerKey = key.toLowerCase();
-      
+
       if (lowerKey === 'cookie' || lowerKey === 'set-cookie') {
         const cookies = parseCookies(value);
         for (const cookie of cookies) {
-          const analysis = analyzeCookie(cookie.name, cookie.value, cookiePatterns);
-          analysis.source = 'request';
-          analysis.url = entry.url;
-          analysis.timestamp = entry.timestamp || Date.now();
-          analysis.cookies.push(analysis);
+          // [FIX] this used to be named `analysis`, exactly shadowing the outer function's
+          // own `analysis` result object (the one declared at the top of analyzeCookies()
+          // with .cookies/.authTokens/etc.) within this loop's block scope. The very next
+          // line then called .cookies.push() on THIS shadowing variable instead -- but
+          // analyzeCookie()'s return shape has no .cookies property at all, so this crashed
+          // immediately with "Cannot read properties of undefined (reading 'push')" the
+          // moment ANY Cookie or Set-Cookie header appeared anywhere in the network log --
+          // which is virtually every request to a real website. Confirmed with a direct,
+          // faithful reproduction of the exact bug. The whole cookie-analysis feature could
+          // not have completed successfully on any real capture with this in place.
+          const cookieAnalysis = analyzeCookie(cookie.name, cookie.value, cookiePatterns);
+          cookieAnalysis.source = 'request';
+          cookieAnalysis.url = entry.url;
+          cookieAnalysis.timestamp = entry.timestamp || Date.now();
+          analysis.cookies.push(cookieAnalysis);
         }
       }
 
@@ -55,15 +65,30 @@ export function analyzeCookies() {
     // Analyze response headers
     for (const [key, value] of Object.entries(responseHeaders)) {
       const lowerKey = key.toLowerCase();
-      
+
       if (lowerKey === 'set-cookie') {
-        const cookies = parseCookies(value);
-        for (const cookie of cookies) {
-          const analysis = analyzeCookie(cookie.name, cookie.value, cookiePatterns);
-          analysis.source = 'response';
-          analysis.url = entry.url;
-          analysis.timestamp = entry.timestamp || Date.now();
-          analysis.cookies.push(analysis);
+        // [FIX] a Set-Cookie header is fundamentally different from a request Cookie header:
+        // it describes exactly ONE cookie (its first name=value pair) followed by that
+        // cookie's OWN attributes (Secure, HttpOnly, SameSite=..., Path=..., Domain=...,
+        // Max-Age=..., Expires=...) -- not additional, separate cookies. Using the same
+        // parseCookies() meant for request headers here treated every "="-containing
+        // attribute as its own bogus, fake cookie -- confirmed directly: SameSite=Strict
+        // produced an extra, non-existent "SameSite" cookie entry. It also meant the real
+        // cookie's secure/httponly/samesite flags could never be detected at all, since
+        // analyzeCookie() checked for them inside the cookie's bare VALUE (e.g. "deadbeef"),
+        // which obviously never contains its own attribute words -- confirmed every real
+        // cookie showed secure:false/httponly:false/samesite:none regardless of what the
+        // actual header said. parseSetCookie() correctly extracts just the one real cookie
+        // plus its real attributes.
+        const parsed = parseSetCookie(value);
+        if (parsed) {
+          const cookieAnalysis = analyzeCookie(parsed.name, parsed.value, cookiePatterns, {
+            secure: parsed.secure, httponly: parsed.httponly, samesite: parsed.samesite
+          });
+          cookieAnalysis.source = 'response';
+          cookieAnalysis.url = entry.url;
+          cookieAnalysis.timestamp = entry.timestamp || Date.now();
+          analysis.cookies.push(cookieAnalysis);
         }
       }
 
@@ -96,7 +121,7 @@ export function analyzeCookies() {
 function parseCookies(headerValue) {
   const cookies = [];
   if (!headerValue) return cookies;
-  
+
   const parts = headerValue.split(';');
   for (const part of parts) {
     const trimmed = part.trim();
@@ -111,19 +136,51 @@ function parseCookies(headerValue) {
       cookies.push({ name, value });
     }
   }
-  
+
   return cookies;
 }
 
-function analyzeCookie(name, value, patterns) {
+// [FIX] see the [FIX] note at the Set-Cookie call site above -- a Set-Cookie header value
+// describes exactly one cookie plus that cookie's own attributes, never multiple cookies.
+function parseSetCookie(headerValue) {
+  if (!headerValue) return null;
+  const parts = headerValue.split(';').map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const eqIndex = parts[0].indexOf('=');
+  if (eqIndex <= 0) return null;
+  const name = parts[0].substring(0, eqIndex).trim();
+  let value = parts[0].substring(eqIndex + 1).trim();
+  if (value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1);
+  }
+
+  const cookie = { name, value, secure: false, httponly: false, samesite: null };
+  for (const attr of parts.slice(1)) {
+    const lowerAttr = attr.toLowerCase();
+    if (lowerAttr === 'secure') cookie.secure = true;
+    else if (lowerAttr === 'httponly') cookie.httponly = true;
+    else if (lowerAttr.startsWith('samesite=')) cookie.samesite = attr.split('=')[1].toLowerCase();
+  }
+  return cookie;
+}
+
+function analyzeCookie(name, value, patterns, flags) {
   const analysis = {
     name: name,
     value: value,
     type: 'unknown',
     category: 'unknown',
-    secure: false,
-    httponly: false,
-    samesite: 'none'
+    // [FIX] these used to be re-derived by searching the cookie's own bare VALUE for the
+    // words "secure"/"httponly" or a "SameSite=..." fragment -- a request Cookie header
+    // never carries attributes at all, and a response Set-Cookie header's attributes live
+    // in the header string alongside the cookie, never inside the cookie's value itself, so
+    // this could never actually detect anything real. Now takes the already correctly-parsed
+    // flags from parseSetCookie() when analyzing a response cookie; a request-header cookie
+    // (no flags available at all) correctly stays at these safe defaults.
+    secure: (flags && flags.secure) || false,
+    httponly: (flags && flags.httponly) || false,
+    samesite: (flags && flags.samesite) || 'none'
   };
 
   const lowerName = name.toLowerCase();
@@ -158,20 +215,14 @@ function analyzeCookie(name, value, patterns) {
     analysis.category = 'csrf';
   }
 
-  // Check security flags (if value contains)
-  if (value.toLowerCase().includes('secure')) analysis.secure = true;
-  if (value.toLowerCase().includes('httponly')) analysis.httponly = true;
-  const sameSiteMatch = value.match(/SameSite=([^;]+)/i);
-  if (sameSiteMatch) analysis.samesite = sameSiteMatch[1].toLowerCase();
-
   return analysis;
 }
 
 export function generateCookieReport() {
   const analysis = analyzeCookies();
-  
+
   let report = '=== COOKIE & SESSION ANALYSIS ===\n\n';
-  
+
   report += '📊 SUMMARY:\n';
   report += `  Total Cookies: ${analysis.summary.totalCookies}\n`;
   report += `  Session Cookies: ${analysis.summary.sessionCookies}\n`;

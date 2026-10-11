@@ -9,17 +9,30 @@ export function mapSPARoutes() {
   const routes = [];
   const seen = new Set();
 
-  const navActions = actions.filter(a => 
+  const navActions = actions.filter(a =>
     a.type === 'spa_navigate' || a.type === 'navigate' || a.type === 'click'
   );
 
   for (const action of navActions) {
     try {
-      const url = new URL(action.url || action.href || '');
+      // [FIX] a click action's own "url" field is the page the click happened ON (content.js
+      // sets it to window.location.href at click time), while "href" is the clicked link's
+      // actual DESTINATION -- the new route this click was meant to discover. The old
+      // "action.url || action.href" order always picked action.url first, which for a click
+      // action is never falsy, so action.href (the only useful part of a click action for
+      // route-mapping purposes) was never actually used at all: every click just re-recorded
+      // the already-known current page instead of the destination being discovered. Confirmed
+      // directly with a realistic click-action payload. navigate/spa_navigate actions are
+      // unaffected -- their own "url" is already the new page by the time they're sent, so
+      // they keep the original, correct preference.
+      const resolvedUrl = action.type === 'click'
+        ? (action.href || action.url || '')
+        : (action.url || action.href || '');
+      const url = new URL(resolvedUrl);
       const path = url.pathname;
       const route = {
         path: path,
-        fullUrl: action.url || action.href,
+        fullUrl: resolvedUrl,
         type: action.type,
         selector: action.selector || 'auto',
         pageState: action.pageState || {},
@@ -51,7 +64,7 @@ export function mapSPARoutes() {
   }
 
   const routeTree = buildRouteTree(routes);
-  
+
   return {
     routes: routes,
     routeTree: routeTree,
@@ -68,43 +81,43 @@ export function mapSPARoutes() {
 
 function buildRouteTree(routes) {
   const tree = {};
-  
+
   for (const route of routes) {
     const parts = route.path.split('/').filter(p => p);
     let current = tree;
-    
+
     for (const part of parts) {
       if (!current[part]) {
         current[part] = {};
       }
       current = current[part];
     }
-    
+
     current['__route'] = {
       type: route.routeType,
       url: route.fullUrl,
       selector: route.selector
     };
   }
-  
+
   return tree;
 }
 
 export function generateSPAStructure() {
   const structure = mapSPARoutes();
-  
+
   let output = '=== SPA ROUTE MAP ===\n\n';
-  
+
   output += `Total Routes: ${structure.totalRoutes}\n`;
   output += `  - Home: ${structure.routeTypes.home}\n`;
   output += `  - Categories: ${structure.routeTypes.category}\n`;
   output += `  - Detail Pages: ${structure.routeTypes.detail}\n`;
   output += `  - Search: ${structure.routeTypes.search}\n`;
   output += `  - Pages: ${structure.routeTypes.page}\n\n`;
-  
+
   output += '=== ROUTE TREE ===\n';
   output += formatRouteTree(structure.routeTree, 0);
-  
+
   output += '\n\n=== ROUTE DETAILS ===\n';
   for (const route of structure.routes.slice(0, 20)) {
     output += `[${route.routeType}] ${route.path}\n`;
@@ -116,14 +129,14 @@ export function generateSPAStructure() {
     }
     output += '\n';
   }
-  
+
   return output;
 }
 
 function formatRouteTree(tree, depth) {
   let output = '';
   const indent = '  '.repeat(depth);
-  
+
   for (const [key, value] of Object.entries(tree)) {
     if (key === '__route') {
       output += `${indent}📍 ${value.type}: ${value.url}\n`;
@@ -134,6 +147,6 @@ function formatRouteTree(tree, depth) {
       output += formatRouteTree(value, depth + 1);
     }
   }
-  
+
   return output;
 }

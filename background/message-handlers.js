@@ -143,7 +143,17 @@ export function initMessageHandlers() {
           xhrBodies: s.xhrBodies, 
           userJourney: s.userJourney, 
           contentPipeline: s.contentPipeline,
-          screenshots: s.screenshots.map(s => ({ ...s, dataUrl: s.dataUrl?.substring(0, 100) + '...' }))
+          // [FIX] this used to truncate every screenshot's dataUrl to 100 characters -- since
+          // this is the ONLY message type that feeds every export button (JSON/CSV/HAR/MD all
+          // read from this single response, cached as currentRecordingData in popup.js), that
+          // meant the full, real screenshot images were captured and held in background
+          // memory but never actually reachable through ANY export path at all -- directly
+          // contradicting the Markdown export's own footer text, which claims "Full
+          // screenshot data available in JSON export". Confirmed directly: that claim was
+          // false. CONFIG.MAX_SCREENSHOTS already bounds how many are kept at once, so the
+          // total payload size stays reasonable; passing them through in full is what makes
+          // the JSON export's own promise of completeness actually true.
+          screenshots: s.screenshots
         } 
       });
       return true;
@@ -154,33 +164,51 @@ export function initMessageHandlers() {
       const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, userJourney: s.userJourney, contentPipeline: s.contentPipeline };
       const format = message.format || 'json';
       let content, filename, mimeType;
-      
+
+      // [FIX] confirmed directly, across several rounds of real device logs: this is a
+      // SEPARATE path from popup.js's own export button -- something else in the extension
+      // (a context menu entry or shortcut, not the popup UI) sends this "export" message
+      // instead, so it never got any of the fixes already applied to popup.js's own
+      // downloadBlob(): (1) static, non-timestamped filenames, risking silent overwrites;
+      // (2) a blob: URL, which Brave's "blob partitioning" privacy feature silently
+      // corrupted before any listener code could see the real name; and (3) saveAs: true,
+      // which -- confirmed separately, after switching to a data: URL -- Brave ALSO ignores
+      // entirely for the supplied filename, falling back to its own generic default
+      // ("download.json") rather than even a smarter MIME-based guess. The one pattern
+      // proven correct in every device log all night is screenshot.js's snapshot download:
+      // a data: URL, saveAs: false, filename supplied directly. Matching that here.
+      const exportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
       switch (format) {
         case 'csv':
           content = exportAsCSV(data);
-          filename = 'stream_recording.csv';
+          filename = `stream_recording_${exportTimestamp}.csv`;
           mimeType = 'text/csv';
           break;
         case 'har':
           content = JSON.stringify(exportAsHAR(data), null, 2);
-          filename = 'stream_recording.har';
+          filename = `stream_recording_${exportTimestamp}.har`;
           mimeType = 'application/json';
           break;
         case 'markdown':
           content = exportAsMarkdown(data);
-          filename = 'stream_recording.md';
+          filename = `stream_recording_${exportTimestamp}.md`;
           mimeType = 'text/markdown';
           break;
         default:
           content = JSON.stringify(data, null, 2);
-          filename = 'stream_recording.json';
+          filename = `stream_recording_${exportTimestamp}.json`;
           mimeType = 'application/json';
       }
-      
-      const blob = new Blob([content], { type: mimeType });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({ url, filename, saveAs: true }, () => URL.revokeObjectURL(url));
-      sendResponse({ status: "exporting", format });
+
+      const base64 = btoa(unescape(encodeURIComponent(content)));
+      const url = `data:${mimeType};base64,${base64}`;
+      chrome.downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" }, (downloadId) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[export] download failed:', chrome.runtime.lastError.message);
+        }
+      });
+      sendResponse({ status: "exporting", format, filename });
     }
     
     // ═══ ACTION ═══
@@ -353,7 +381,12 @@ export function initMessageHandlers() {
     
     // ═══ GET STREAM LINKS ═══
     else if (message.type === "getStreamLinks") {
-      const urlPattern = /\.(m3u8|mp4|ts)(\?|$)|\/hls\d?\/|master\.txt/i;
+      // [FIX] only special-cased the exact filename "master.txt", missing
+      // other real .txt-extension playlist files from the same CDN family
+      // (confirmed directly: "index-v1-a1.txt" is a real, captured stream
+      // URL that this pattern silently missed). Generalized to any .txt
+      // extension, matching the same real links that were missed before.
+      const urlPattern = /\.(m3u8|mp4|ts|txt)(\?|$)|\/hls\d?\//i;
       const contentTypePattern = /video\/|mpegurl|application\/x-mpegurl/i;
       const isSegmentUrl = (u) => /\/seg-\d+-/i.test(u);
 
@@ -366,7 +399,8 @@ export function initMessageHandlers() {
         })
         .map((entry) => entry.url);
 
-      const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4|ts)(?:\?[^\s"'<>\\]*)?/gi;
+      // [FIX] same missing .txt-extension issue as urlPattern above, same fix.
+      const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
       const rawMatches = [];
       for (const entry of s.xhrBodies) {
         if (!entry.body) continue;
@@ -488,6 +522,22 @@ export function initMessageHandlers() {
         const tabId = sender.tab.id;
         console.log("[auto-snapshot] ✅ scheduling from pageLoaded:", message.url);
         scheduleAutoSnapshot(tabId);
+
+        // [NEW] content.js flags pages that look ad-gated/delayed-reveal (an ad-block-check
+        // script hiding real content behind an overlay until it passes). The normal
+        // scheduleAutoSnapshot() call above still fires at its usual delay, which may well be
+        // too early for such a page -- rather than guessing a longer fixed delay for this one
+        // call too, take a SECOND snapshot later, once the gate should have cleared. This goes
+        // straight to captureSnapshot() on a plain setTimeout rather than through
+        // scheduleAutoSnapshot() again: that function keeps only one pending timer per tab, so
+        // calling it a second time for the same tab would just cancel and replace the first,
+        // normal-delay capture instead of taking a genuine second one.
+        if (message.contentGated) {
+          console.log("[auto-snapshot] 🔒 content-gating detected, scheduling a delayed re-capture in 4s:", message.url);
+          setTimeout(() => {
+            captureSnapshot(null, tabId);
+          }, 4000);
+        }
       } else {
         console.log("[auto-snapshot] ❌ NOT scheduling from pageLoaded. shouldSchedule:", shouldSchedule, "isSameSite:", isSame, "recording:", s.recording, "autoSnapshot:", s.autoSnapshot, "hasTab:", !!sender.tab, "frameId:", sender.frameId);
       }
@@ -682,7 +732,10 @@ export function initMessageHandlers() {
     
     // ═══ GET SCREENSHOTS ═══
     else if (message.type === "getScreenshots") {
-      sendResponse({ screenshots: s.screenshots.map(s => ({ ...s, dataUrl: s.dataUrl?.substring(0, 100) + '...' })) });
+      // [FIX] same truncation bug as getRecordingData above, same fix -- a message type
+      // literally named "getScreenshots" that never actually returned real screenshot data
+      // was the more surprising half of this bug, if anything.
+      sendResponse({ screenshots: s.screenshots });
     }
     
     // ═══ COPY AS PYTHON ═══
@@ -838,27 +891,43 @@ export function initMessageHandlers() {
     // ═══ FEATURE 14: ANALYZE HLS PLAYLIST ═══
     else if (message.type === "analyzeHLSPlaylist") {
       const { url, content } = message;
-      const analysis = analyzeHLSPlaylist(url, content);
-      const report = generateQualityReport(analysis);
-      const bestQuality = findBestQuality(analysis);
-      sendResponse({ 
-        status: "ok", 
-        analysis: analysis,
-        report: report,
-        bestQuality: bestQuality
-      });
+      // [FIX] analyzeHLSPlaylist() always returns a Promise now (fixed earlier this session
+      // so callers could rely on one consistent return type instead of sometimes-sync/
+      // sometimes-async) -- this handler was never updated to match, so `analysis` held an
+      // unresolved Promise object. Confirmed directly: sendResponse() serializes a Promise to
+      // an empty object {} over the real message-passing channel, so the popup would have
+      // received completely empty analysis/report/bestQuality data instead of anything real.
+      // Made async, awaited, and added `return true` so the message channel stays open for
+      // the async sendResponse -- the same pattern already used by every other async handler
+      // in this file (manualSolve, extractYTSData, solveChallenge, etc.).
+      (async () => {
+        const analysis = await analyzeHLSPlaylist(url, content);
+        const report = generateQualityReport(analysis);
+        const bestQuality = findBestQuality(analysis);
+        sendResponse({ 
+          status: "ok", 
+          analysis: analysis,
+          report: report,
+          bestQuality: bestQuality
+        });
+      })();
+      return true;
     }
 
     // ═══ FEATURE 15: GET HLS BEST QUALITY ═══
     else if (message.type === "getHLSBestQuality") {
       const { url, content } = message;
-      const analysis = analyzeHLSPlaylist(url, content);
-      const bestQuality = findBestQuality(analysis);
-      sendResponse({ 
-        status: "ok", 
-        bestQuality: bestQuality,
-        analysis: analysis
-      });
+      // [FIX] same missing-await issue as Feature 14 above, same fix.
+      (async () => {
+        const analysis = await analyzeHLSPlaylist(url, content);
+        const bestQuality = findBestQuality(analysis);
+        sendResponse({ 
+          status: "ok", 
+          bestQuality: bestQuality,
+          analysis: analysis
+        });
+      })();
+      return true;
     }
 
     // ═══ FEATURE 16: DISCOVER ALL ROUTES ═══
@@ -886,9 +955,16 @@ export function initMessageHandlers() {
     // ═══ FEATURE 19: VISUALIZE HLS PLAYLIST ═══
     else if (message.type === "visualizeHLSPlaylist") {
       const { url, content } = message;
-      const analysis = visualizeHLSPlaylist(url, content);
-      const report = generateVisualizationReport(analysis);
-      sendResponse({ status: "ok", analysis: analysis, report: report });
+      // [FIX] visualizeHLSPlaylist() now always returns a Promise (fixed alongside adding
+      // its missing fetch-from-URL fallback -- see m3u8-visualizer.js). Same missing-await
+      // class of bug as Features 14/15/25 above, same fix: made async, awaited, return true
+      // to keep the message channel open for the async sendResponse.
+      (async () => {
+        const analysis = await visualizeHLSPlaylist(url, content);
+        const report = generateVisualizationReport(analysis);
+        sendResponse({ status: "ok", analysis: analysis, report: report });
+      })();
+      return true;
     }
 
     // ═══ FEATURE 20: DEOBFUSCATE JAVASCRIPT ═══
@@ -929,9 +1005,24 @@ export function initMessageHandlers() {
 
     // ═══ FEATURE 25: TRACK SITE VERSION ═══
     else if (message.type === "trackSiteVersion") {
-      const tracking = trackSiteVersion();
-      const report = generateVersionReport();
-      sendResponse({ status: "ok", tracking: tracking, report: report });
+      // [FIX] trackSiteVersion()/generateVersionReport() were made async earlier this session
+      // (they need chrome.tabs.query()/chrome.storage.local, which do not exist synchronously
+      // -- see version-tracker.js) -- this handler was never updated to match, so `tracking`
+      // held an unresolved Promise (same class of break as Feature 14/15 above, confirmed the
+      // same way: it serializes to {} over sendResponse). Separately, generateVersionReport()
+      // already calls trackSiteVersion() internally to build its report text -- calling it
+      // AGAIN directly here meant every single "Track Version" click appended TWO entries to
+      // the persisted version history instead of one, corrupting the history's own
+      // change-detection (each check would compare against the entry the SAME click had just
+      // created, not the last genuinely separate check). popup.js's "trackVersion" handler
+      // only ever reads response.report, never response.tracking, so calling
+      // generateVersionReport() alone (awaited) is both the async fix and the double-append
+      // fix in one: it performs the one, correct trackSiteVersion() call internally.
+      (async () => {
+        const report = await generateVersionReport();
+        sendResponse({ status: "ok", report: report });
+      })();
+      return true;
     }
 
     // ═══ FEATURE 26: GENERATE TESTS ═══

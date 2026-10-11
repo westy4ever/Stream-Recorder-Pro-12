@@ -81,8 +81,14 @@ export function discoverQualityVariants() {
   }
 
   if (qualities.variants.length > 0) {
-    qualities.variants.sort((a, b) => a.rank - b.rank);
-    qualities.bestQuality = qualities.variants[0];
+    // [FIX] .sort() mutates the array it's called on IN PLACE -- this used to sort
+    // qualities.variants directly just to read off the first (best) element, silently
+    // destroying the variants' original discovery order (the order requests/bodies were
+    // actually encountered in the network log) as a side effect of computing bestQuality.
+    // Same bug pattern confirmed and fixed in the sibling hls-analyzer.js this session;
+    // fixed the same way here for consistency -- sort a copy, leave the original untouched.
+    const sortedByRank = [...qualities.variants].sort((a, b) => a.rank - b.rank);
+    qualities.bestQuality = sortedByRank[0];
   }
 
   return qualities;
@@ -98,12 +104,12 @@ function extractUrlsFromObject(obj) {
       urls.push(...extractUrlsFromObject(item));
     }
   } else if (typeof obj === 'object' && obj !== null) {
-    for (const [key, value] of Object.entries(obj)) {
-      if (key.toLowerCase().includes('url') || key.toLowerCase().includes('src') || key.toLowerCase().includes('file')) {
-        urls.push(...extractUrlsFromObject(value));
-      } else {
-        urls.push(...extractUrlsFromObject(value));
-      }
+    // [FIX] this used to be `if (key looks like a url/src/file field) { recurse } else {
+    // recurse }` -- both branches did the exact same thing, so the key-name check was
+    // entirely dead code with no effect on behavior. Simplified to what it actually does;
+    // no behavior change.
+    for (const value of Object.values(obj)) {
+      urls.push(...extractUrlsFromObject(value));
     }
   }
   return urls;
@@ -112,12 +118,12 @@ function extractUrlsFromObject(obj) {
 function parseHLSPlaylist(playlist) {
   const variants = [];
   const lines = playlist.split('\n');
-  
+
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].includes('#EXT-X-STREAM-INF')) {
       const info = lines[i];
       const url = lines[i + 1]?.trim();
-      
+
       if (url) {
         let quality = 'Unknown';
         let rank = 99;

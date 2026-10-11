@@ -136,21 +136,31 @@ export function initNetworkCapture() {
   chrome.webRequest.onCompleted.addListener(
     (details) => {
       const s = state;
-      if (!s.recording) return;
       const entry = s.pending[details.requestId];
-      if (entry) {
-        entry.statusCode = details.statusCode;
-        entry.fromCache = details.fromCache;
-        if (!entry.responseHeaders && details.responseHeaders) {
-          entry.responseHeaders = headersToObject(details.responseHeaders);
-        }
-        if (entry.redirectChain) {
-          entry.finalUrl = entry.redirectChain[entry.redirectChain.length - 1];
-        }
-        s.networkLog.push(entry);
-        delete s.pending[details.requestId];
-        scheduleSave();
+      if (!entry) return;
+      // [FIX] this cleanup (removing the tracking entry from s.pending) used to be gated
+      // behind the SAME `if (!s.recording) return;` guard as the actual recording logic below
+      // it -- but those are two different concerns. If recording stops at any point between a
+      // request STARTING (onBeforeRequest, which only creates an entry while s.recording is
+      // true) and this request FINISHING, the entry was silently left behind forever: nothing
+      // else ever cleans up s.pending (cleanupMemory() in state.js trims every other
+      // collection except this one), and it persists across service-worker restarts too,
+      // since restoreState() restores it from storage. Over many start/stop cycles this grows
+      // without bound. Cleanup now always runs; only the actual recording of the completed
+      // request still respects s.recording.
+      delete s.pending[details.requestId];
+      if (!s.recording) return;
+
+      entry.statusCode = details.statusCode;
+      entry.fromCache = details.fromCache;
+      if (!entry.responseHeaders && details.responseHeaders) {
+        entry.responseHeaders = headersToObject(details.responseHeaders);
       }
+      if (entry.redirectChain) {
+        entry.finalUrl = entry.redirectChain[entry.redirectChain.length - 1];
+      }
+      s.networkLog.push(entry);
+      scheduleSave();
     },
     { urls: ["<all_urls>"] },
     ["responseHeaders"]
@@ -160,15 +170,17 @@ export function initNetworkCapture() {
   chrome.webRequest.onErrorOccurred.addListener(
     (details) => {
       const s = state;
-      if (!s.recording) return;
       const entry = s.pending[details.requestId];
-      if (entry) {
-        entry.error = details.error;
-        entry.blockedByExtension = details.error === "net::ERR_BLOCKED_BY_CLIENT";
-        s.networkLog.push(entry);
-        delete s.pending[details.requestId];
-        scheduleSave();
-      }
+      if (!entry) return;
+      // [FIX] same leak, same fix as onCompleted above -- a request that errors out after
+      // recording has already stopped must still have its s.pending entry cleaned up.
+      delete s.pending[details.requestId];
+      if (!s.recording) return;
+
+      entry.error = details.error;
+      entry.blockedByExtension = details.error === "net::ERR_BLOCKED_BY_CLIENT";
+      s.networkLog.push(entry);
+      scheduleSave();
     },
     { urls: ["<all_urls>"] }
   );

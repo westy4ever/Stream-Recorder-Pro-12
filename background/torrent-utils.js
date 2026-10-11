@@ -10,13 +10,13 @@ export function getTorrentLinks() {
 
   for (const body of xhrBodies) {
     if (!body.body) continue;
-    
+
     // Check for torrent patterns
     let matchCount = 0;
     for (const pattern of TORRENT_BODY_PATTERNS) {
       if (pattern.test(body.body)) matchCount++;
     }
-    
+
     if (matchCount >= 2) {
       const entry = {
         type: 'torrent_api',
@@ -46,7 +46,7 @@ export function getTorrentLinks() {
         timestamp: entry.timestamp || Date.now()
       });
     }
-    
+
     // Check for suspected backend APIs
     if (entry.url && (entry.url.includes('/api/') || entry.url.includes('/backend/'))) {
       const body = xhrBodies.find(b => b.url === entry.url);
@@ -69,7 +69,7 @@ export function getTorrentLinks() {
 // NEW: Analyze torrent response
 export function analyzeTorrentResponse(body) {
   if (!body) return null;
-  
+
   const analysis = {
     hashes: [],
     magnets: [],
@@ -99,17 +99,24 @@ export function analyzeTorrentResponse(body) {
     analysis.titles.push(title);
   }
 
-  // Extract quality
-  const qualityMatch = body.match(/(1080p|720p|480p|360p|2160p|4K|FHD|HD)/i);
-  if (qualityMatch) analysis.qualities.push(qualityMatch[1]);
-
-  // Extract seeds
-  const seedsMatch = body.match(/"seeds"\s*:\s*(\d+)/i);
-  if (seedsMatch) analysis.seeds.push(parseInt(seedsMatch[1]));
-
-  // Extract peers
-  const peersMatch = body.match(/"peers"\s*:\s*(\d+)/i);
-  if (peersMatch) analysis.peers.push(parseInt(peersMatch[1]));
+  // [FIX] qualities/seeds/peers are all declared as arrays -- clearly intended to capture
+  // one value per torrent/stream entry in a response that lists several (the normal,
+  // expected shape for a real torrent-aggregator API: multiple quality variants, each with
+  // its own seed/peer counts). But .match() without the /g flag only ever returns the FIRST
+  // match in the whole body, and adding /g on its own would lose the capture group entirely
+  // (a known JS quirk -- .match() with /g returns only full match strings). Confirmed
+  // directly against a realistic multi-entry response: only 1 of 3 real quality/seed/peer
+  // values was ever captured. matchAll() gives both global matching AND capture groups
+  // together, which is what these three actually need to work as intended.
+  for (const m of body.matchAll(/(1080p|720p|480p|360p|2160p|4K|FHD|HD)/gi)) {
+    analysis.qualities.push(m[1]);
+  }
+  for (const m of body.matchAll(/"seeds"\s*:\s*(\d+)/gi)) {
+    analysis.seeds.push(parseInt(m[1]));
+  }
+  for (const m of body.matchAll(/"peers"\s*:\s*(\d+)/gi)) {
+    analysis.peers.push(parseInt(m[1]));
+  }
 
   // Extract fileIdx
   const fileIdxMatch = body.match(/"fileIdx"\s*:\s*(\d+)/i);

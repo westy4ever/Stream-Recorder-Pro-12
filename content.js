@@ -688,6 +688,57 @@ function handleSPAUrlChange(url) {
   }
 }
 
+// ═══ NEW: content-gating detection (ad-block-check / delayed-reveal pages) ═══
+// [NEW] some real pages (confirmed: a shahid4u-style /media-issue/download/ gateway) run an
+// ad-block-detection script that hides the real content behind an overlay until the check
+// passes, revealing it only after a delay -- the fix shipped earlier this session for that
+// one specific URL shape used a fixed, hardcoded delay (3000ms) rather than actually detecting
+// the pattern, so a DIFFERENT site with the same kind of gate, but a different URL shape,
+// would still get snapshotted too early with no real content visible. This looks for the
+// pattern itself -- generic ad-block-check/overlay function names -- rather than a specific
+// URL, so it can catch the same class of page anywhere it appears. Requiring at least 2
+// independent signals (not just one incidental mention of "adblock" somewhere) keeps this
+// from false-triggering on ordinary pages; verified directly against a real gated page, an
+// ordinary page, and a page with only an incidental, unrelated mention of the word.
+function detectContentGatingScript() {
+  try {
+    const scripts = Array.from(document.scripts).map(s => s.textContent || '').join('\n');
+    const bodyHtml = document.body ? document.body.innerHTML : '';
+
+    // [FIX] the original version only ever read INLINE script text and body HTML -- a
+    // <script src="..."> tag has empty textContent; its actual code lives in a separate file
+    // that was never part of the DOM at all. Real sites commonly bundle this kind of logic
+    // into an external, minified file rather than writing it inline (confirmed as a realistic
+    // shape from this same investigation's own MegaMax findings: heavily externally-bundled
+    // JS chunks), so the original version could have real false negatives on exactly the
+    // sites most likely to use this pattern. A dedicated, distinctly-named external script
+    // (e.g. "adblock-detect.min.js") is a far more deliberate, specific signal than an
+    // incidental text match, so it's treated as sufficient on its own here -- verified
+    // directly: an external-only case that was completely invisible to the original version
+    // is now correctly detected, while ordinary, unrelated external scripts still correctly
+    // do not trigger it.
+    const externalSrcs = Array.from(document.scripts).map(s => s.src || '').filter(Boolean);
+    const srcSignature = /adblock|anti-?adb|ad-?block-?detect/i;
+    for (const src of externalSrcs) {
+      if (srcSignature.test(src)) return true;
+    }
+
+    const gateSignatures = [
+      /adblock/i,
+      /runAdBlockCheck/i,
+      /showOverlay\s*\(/,
+      /hideOverlay\s*\(/,
+    ];
+    let matchCount = 0;
+    for (const sig of gateSignatures) {
+      if (sig.test(scripts) || sig.test(bodyHtml)) matchCount++;
+    }
+    return matchCount >= 2;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ═══ ENHANCED: Page load tracking ═══
 let previousUrl = window.location.href;
 
@@ -699,12 +750,14 @@ function trackPageLoad() {
   if (currentUrl !== previousUrl || pageLoadCount === 1) {
     previousUrl = currentUrl;
     const pageState = getPageState();
+    const contentGated = detectContentGatingScript();
 
     chrome.runtime.sendMessage({
       type: "pageLoaded",
       url: currentUrl,
       pageState: pageState,
-      loadCount: pageLoadCount
+      loadCount: pageLoadCount,
+      contentGated: contentGated
     }).catch(() => {});
   }
 }

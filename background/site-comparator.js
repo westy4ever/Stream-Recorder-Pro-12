@@ -1,6 +1,23 @@
 // site-comparator.js - Site Comparison Tool
 import { state } from './state.js';
 
+// [FIX] entry.requestHeaders/responseHeaders are plain objects keyed by whatever case the
+// header actually arrived in -- headersToObject() in state.js preserves the original case
+// exactly, and real browsers send the standard, capitalized convention ("Authorization",
+// "CF-RAY"), not lowercase. Plain object property access is case-sensitive, so the old
+// entry.requestHeaders?.authorization / entry.responseHeaders?.['cf-ray'] checks below could
+// never actually match real-world header casing -- confirmed directly against realistic
+// header objects: both hasAuth and cloudflare detection silently returned false even with the
+// real header present. This does a proper case-insensitive lookup instead.
+function getHeaderCaseInsensitive(headers, name) {
+  if (!headers) return undefined;
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) return headers[key];
+  }
+  return undefined;
+}
+
 export function compareSites(site1Data, site2Data) {
   const site1 = analyzeSiteData(site1Data, 'Site A');
   const site2 = analyzeSiteData(site2Data, 'Site B');
@@ -80,8 +97,12 @@ function analyzeSiteData(data, name) {
   };
 
   // Detect API format
+  // [FIX] this function accepts externally-supplied data (data?.networkLog), not just the
+  // live capture session -- e.g. comparing two saved/exported sessions -- so entry.url is
+  // less guaranteed to always be present than in the live-only capture path elsewhere in this
+  // codebase. Guarded consistently below rather than assumed.
   for (const entry of networkLog) {
-    if (entry.url.includes('/api/')) {
+    if (entry.url && entry.url.includes('/api/')) {
       if (entry.url.includes('/graphql')) {
         analysis.apiFormat = 'GraphQL';
       } else if (entry.url.includes('/v2/') || entry.url.includes('/v3/')) {
@@ -92,16 +113,18 @@ function analyzeSiteData(data, name) {
 
   // Extract API endpoints
   for (const entry of networkLog) {
-    if (entry.url.includes('/api/') || entry.url.includes('/ajax/')) {
-      const url = new URL(entry.url);
-      analysis.apiEndpoints.push(url.pathname);
+    if (entry.url && (entry.url.includes('/api/') || entry.url.includes('/ajax/'))) {
+      try {
+        const url = new URL(entry.url);
+        analysis.apiEndpoints.push(url.pathname);
+      } catch (e) {}
     }
   }
   analysis.apiEndpoints = [...new Set(analysis.apiEndpoints)];
 
   // Extract stream hosts
   for (const entry of networkLog) {
-    if (entry.url.includes('.m3u8') || entry.url.includes('.mp4')) {
+    if (entry.url && (entry.url.includes('.m3u8') || entry.url.includes('.mp4'))) {
       try {
         const host = new URL(entry.url).hostname;
         analysis.streamHosts.push(host);
@@ -112,7 +135,8 @@ function analyzeSiteData(data, name) {
 
   // Check for auth
   for (const entry of networkLog) {
-    if (entry.requestHeaders?.authorization || entry.requestHeaders?.cookie) {
+    if (getHeaderCaseInsensitive(entry.requestHeaders, 'authorization') ||
+        getHeaderCaseInsensitive(entry.requestHeaders, 'cookie')) {
       analysis.hasAuth = true;
       break;
     }
@@ -120,7 +144,7 @@ function analyzeSiteData(data, name) {
 
   // Check for Cloudflare
   for (const entry of networkLog) {
-    if (entry.responseHeaders?.['cf-ray'] || entry.url.includes('cloudflare')) {
+    if (getHeaderCaseInsensitive(entry.responseHeaders, 'cf-ray') || (entry.url && entry.url.includes('cloudflare'))) {
       analysis.cloudflare = true;
       break;
     }
@@ -135,11 +159,11 @@ function analyzeSiteData(data, name) {
 
 export function generateComparisonReport(site1Data, site2Data) {
   const comparison = compareSites(site1Data, site2Data);
-  
+
   let report = '=== SITE COMPARISON TOOL ===\n\n';
-  
+
   report += `📊 ${comparison.site1.name} vs ${comparison.site2.name}\n\n`;
-  
+
   report += '📈 SITE 1 METRICS:\n';
   report += `  API Format: ${comparison.site1.apiFormat}\n`;
   report += `  API Endpoints: ${comparison.site1.apiEndpoints.length}\n`;

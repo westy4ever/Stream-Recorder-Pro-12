@@ -225,6 +225,28 @@ export function buildPersistPayload() {
           responseBody: n.responseBody ? n.responseBody.substring(0, 2000) : null
         })),
     pending: s.pending,
+    // [FIX] confirmed directly: xhrBodies was entirely absent from this
+    // function's returned object, even though every sibling collection
+    // (networkLog, actions, userJourney, contentPipeline, screenshots)
+    // is persisted here. Manifest V3 service workers are ephemeral by
+    // design -- Chrome can and does kill and restart them mid-session,
+    // routinely, not as an edge case -- and restoreState() below
+    // correctly brings every one of those siblings back after a
+    // restart except this one, which was simply never saved in the
+    // first place. This was a second, independent path to the exact
+    // same "xhrBodies came back empty" symptom investigated and fixed
+    // elsewhere this session (the page-hook.js/websocket-hook.js race
+    // condition) -- fixing the race alone does not help if a restart
+    // during the session still discards everything captured so far.
+    // Each body is truncated before persisting, matching the same
+    // 2000-char treatment networkLog's own bodies already get just
+    // below, since a single xhr body can be far larger in memory (up
+    // to MAX_BODY_CHARS, confirmed up to 500000 chars in page-hook.js)
+    // than is reasonable to write to chrome.storage repeatedly.
+    xhrBodies: s.xhrBodies.slice(-CONFIG.MAX_XHR_BODIES_SIZE).map(x => ({
+      ...x,
+      body: x.body ? x.body.substring(0, 2000) : x.body
+    })),
     userJourney: s.userJourney.slice(-100),
     contentPipeline: {
       ...s.contentPipeline,
@@ -258,6 +280,7 @@ export function persistState() {
       primaryDomain: payload.primaryDomain,
       actions: payload.actions.slice(0, 50),
       networkLog: payload.networkLog.slice(0, 50),
+      xhrBodies: payload.xhrBodies.slice(0, 50),
       userJourney: payload.userJourney.slice(0, 50),
       contentPipeline: {
         source: payload.contentPipeline.source || '',
@@ -317,6 +340,10 @@ export function restoreState(savedState) {
     s.actions = savedState.actions || [];
     s.networkLog = savedState.networkLog || [];
     s.pending = savedState.pending || {};
+    // [FIX] see buildPersistPayload() above -- this brings xhrBodies
+    // back after a service-worker restart the same way every sibling
+    // collection already does, instead of silently staying empty.
+    s.xhrBodies = savedState.xhrBodies || [];
     s.userJourney = savedState.userJourney || [];
     s.contentPipeline = savedState.contentPipeline || { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };
     s.screenshots = savedState.screenshots || [];

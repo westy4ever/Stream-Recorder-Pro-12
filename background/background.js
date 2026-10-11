@@ -18,25 +18,35 @@ console.log("Stream Recorder Pro background ready (modularized)");
     if (stored && stored.srState) {
       restoreState(stored.srState);
       console.log("Restored recording state from local storage");
-      return;
-    }
-    const session = await chrome.storage.session.get(['srStateBackup']);
-    if (session && session.srStateBackup) {
-      restoreState(session.srStateBackup);
-      console.log("Restored recording state from session backup");
-      return;
+    } else {
+      const session = await chrome.storage.session.get(['srStateBackup']);
+      if (session && session.srStateBackup) {
+        restoreState(session.srStateBackup);
+        console.log("Restored recording state from session backup");
+      }
     }
   } catch (e) {
     console.warn('Failed to restore recording state:', e);
   }
-})();
 
-// ═══ RESTORE UI BADGE ═══
-if (state.recording) {
-  chrome.action.setBadgeText({ text: "REC" });
-  chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
-  broadcastRecordingState(true);
-}
+  // ═══ RESTORE UI BADGE ═══
+  // [FIX] this used to be a separate, synchronous block that ran immediately after the async
+  // IIFE above was fired off -- NOT after it actually finished. Confirmed directly: that meant
+  // this check always read state.recording's pre-restore default (false), even on a genuine
+  // mid-recording restart, since chrome.storage.local.get() is a real async call that yields
+  // control back before restoreState() ever runs. Manifest V3 routinely suspends/restarts the
+  // service worker (after ~30s idle, among other triggers), so this wasn't a rare edge case --
+  // every one of those restarts during an active recording silently dropped the extension
+  // icon's "REC" badge and skipped telling any already-open tab to show its recording
+  // indicator again, both looking exactly like "recording silently stopped" even though state
+  // was (eventually, just too late for this one-time check) restored correctly. Moved inside
+  // the IIFE, after restoreState() has actually run, so it sees the real, restored value.
+  if (state.recording) {
+    chrome.action.setBadgeText({ text: "REC" });
+    chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
+    broadcastRecordingState(true);
+  }
+})();
 
 // ═══ MEMORY MANAGEMENT ═══
 setInterval(cleanupMemory, CONFIG.AUTO_CLEANUP_INTERVAL);
@@ -62,7 +72,7 @@ initKeyboardShortcuts();
 // The expectingSnapshotFilename flag is set by screenshot.js before calling download
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   const isSnapshotDataUri = downloadItem.url && downloadItem.url.startsWith('data:text/html');
-  
+
   console.log("[auto-snapshot] onDeterminingFilename called:", {
     url: downloadItem.url ? downloadItem.url.substring(0, 100) + '...' : 'no url',
     filename: downloadItem.filename,
@@ -71,7 +81,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     isSnapshotDataUri: isSnapshotDataUri,
     expectingSnapshotFilename: expectingSnapshotFilename
   });
-  
+
   if (isSnapshotDataUri && expectingSnapshotFilename) {
     // Use the filename we set in screenshot.js
     const filename = expectingSnapshotFilename;
@@ -79,7 +89,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     suggest({ filename, conflictAction: "uniquify" });
     return;
   }
-  
+
   if (isSnapshotDataUri) {
     // Fallback: snapshot but no filename set
     const fallbackFilename = 'snapshot_' + Date.now() + '.html';
@@ -87,11 +97,22 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     suggest({ filename: fallbackFilename, conflictAction: "uniquify" });
     return;
   }
-  
+
   // Non-snapshot download - use default behavior
-  console.log("[auto-snapshot] Non-snapshot download, using default");
-  suggest();
+  // [FIX] this listener fires for every download the extension makes, not
+  // just snapshots. Chrome's own docs say bare suggest() (no arguments)
+  // should preserve downloadItem.filename -- the name already determined
+  // from the original download() call -- so this should have been a safe
+  // no-op. Kept as an explicit pass-through rather than bare suggest() as
+  // a defensive measure, though the actual root cause of the naming bug
+  // turned out to be upstream of this listener entirely (downloads.download's
+  // own saveAs: true discarding the supplied filename before this event
+  // even fires, confirmed directly with real device logs) -- fixed at the
+  // call sites themselves (saveAs: false everywhere exports are made).
+  console.log("[auto-snapshot] Non-snapshot download, using default:", downloadItem.filename);
+  suggest({ filename: downloadItem.filename });
 });
 
 chrome.action.setBadgeText({ text: "" });
+
 console.log("Stream Recorder Pro ready");

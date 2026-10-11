@@ -18,7 +18,6 @@ export function discoverSelectors() {
     descriptions: [],
     links: [],
     bestSelector: null,
-    // ═══ NEW: Store samples for debugging ═══
     samples: {
       htmlSample: null,
       movieSample: null,
@@ -26,10 +25,15 @@ export function discoverSelectors() {
     }
   };
 
-  // ═══ NEW: Look for HTML content in network logs ═══
   for (const entry of networkLog) {
-    if (entry.url && entry.url.includes('/category/') || entry.url.includes('/movie/') || entry.url.includes('/watch/')) {
-      // This is likely a page load
+    // [FIX] && binds tighter than || in JS -- this only guarded the FIRST .includes() call
+    // against a missing entry.url; the second and third had no such guard at all and would
+    // throw "Cannot read properties of undefined (reading 'includes')" if entry.url were ever
+    // falsy. Confirmed with a direct reproduction. In this codebase's own live-capture path
+    // (network-capture.js) entry.url always comes from a real webRequest event and should
+    // never actually be missing, so this is a defensive-coding gap rather than a bug hit in
+    // normal use -- but cheap and correct to close regardless.
+    if (entry.url && (entry.url.includes('/category/') || entry.url.includes('/movie/') || entry.url.includes('/watch/'))) {
       const body = xhrBodies.find(b => b.url === entry.url);
       if (body && body.body && body.body.length > 1000) {
         const htmlSelectors = extractSelectorsFromHTML(body.body);
@@ -40,8 +44,7 @@ export function discoverSelectors() {
         selectors.years.push(...htmlSelectors.years);
         selectors.genres.push(...htmlSelectors.genres);
         selectors.links.push(...htmlSelectors.links);
-        
-        // Store sample for debugging
+
         if (!selectors.samples.htmlSample) {
           selectors.samples.htmlSample = body.body.substring(0, 1000);
           selectors.samples.urlSample = entry.url;
@@ -50,16 +53,12 @@ export function discoverSelectors() {
     }
   }
 
-  // ═══ NEW: Look for patterns in xhrBodies (JSON responses) ═══
   for (const body of xhrBodies) {
     if (body.body && body.body.length > 100) {
-      // Try to parse as JSON
       try {
         const data = JSON.parse(body.body);
         if (Array.isArray(data) && data.length > 0 && typeof data[0] === 'object') {
-          // This might be a list of items
           selectors.samples.movieSample = JSON.stringify(data[0], null, 2);
-          // Extract field names as potential selectors
           for (const key of Object.keys(data[0])) {
             if (key === 'title' || key === 'name') {
               selectors.titles.push({
@@ -96,7 +95,6 @@ export function discoverSelectors() {
           }
         }
       } catch (e) {
-        // Not JSON, check if it's HTML
         if (body.body.includes('<div') && body.body.includes('<a')) {
           const htmlSelectors = extractSelectorsFromHTML(body.body);
           selectors.itemContainers.push(...htmlSelectors.itemContainers);
@@ -111,40 +109,38 @@ export function discoverSelectors() {
     }
   }
 
-  // ═══ NEW: Look at content pipeline ═══
   if (contentPipeline.movieList && contentPipeline.movieList.length > 0) {
     const samples = contentPipeline.movieList;
-    
+
     const titlePatterns = analyzeField(samples, 'title');
     if (titlePatterns) {
       selectors.titles.push(...titlePatterns);
     }
-    
+
     const posterPatterns = analyzeField(samples, 'poster');
     if (posterPatterns) {
       selectors.posters.push(...posterPatterns);
     }
-    
+
     const ratingPatterns = analyzeField(samples, 'rating');
     if (ratingPatterns) {
       selectors.ratings.push(...ratingPatterns);
     }
-    
+
     const yearPatterns = analyzeField(samples, 'year');
     if (yearPatterns) {
       selectors.years.push(...yearPatterns);
     }
-    
+
     const genrePatterns = analyzeField(samples, 'genre');
     if (genrePatterns) {
       selectors.genres.push(...genrePatterns);
     }
-    
+
     selectors.bestSelector = findBestContainerSelector(samples);
     selectors.samples.movieSample = JSON.stringify(samples[0], null, 2);
   }
 
-  // ═══ NEW: Look at actions for navigation patterns ═══
   for (const action of actions) {
     if (action.href && action.href.includes('/category/')) {
       selectors.links.push({
@@ -164,7 +160,6 @@ export function discoverSelectors() {
     }
   }
 
-  // Deduplicate and rank selectors
   selectors.itemContainers = rankSelectors(selectors.itemContainers);
   selectors.titles = rankSelectors(selectors.titles);
   selectors.posters = rankSelectors(selectors.posters);
@@ -179,9 +174,9 @@ export function discoverSelectors() {
 function analyzeField(samples, field) {
   const patterns = [];
   const values = samples.filter(s => s[field]).map(s => s[field]);
-  
+
   if (values.length === 0) return null;
-  
+
   if (field === 'poster' && values.every(v => v.startsWith('http'))) {
     patterns.push({
       type: 'url',
@@ -196,7 +191,7 @@ function analyzeField(samples, field) {
       matches: values.length
     });
   }
-  
+
   if (field === 'title') {
     patterns.push({
       type: 'text',
@@ -211,7 +206,7 @@ function analyzeField(samples, field) {
       matches: values.length
     });
   }
-  
+
   if (field === 'rating' && values.some(v => /^\d+(\.\d+)?$/.test(v))) {
     patterns.push({
       type: 'text',
@@ -220,7 +215,7 @@ function analyzeField(samples, field) {
       matches: values.length
     });
   }
-  
+
   if (field === 'year' && values.some(v => /\d{4}/.test(v))) {
     patterns.push({
       type: 'text',
@@ -229,7 +224,7 @@ function analyzeField(samples, field) {
       matches: values.length
     });
   }
-  
+
   return patterns;
 }
 
@@ -243,14 +238,14 @@ function findBestContainerSelector(samples) {
       }
     }
   }
-  
+
   if (containers.length === 0) return null;
-  
+
   const freq = {};
   for (const c of containers) {
     freq[c] = (freq[c] || 0) + 1;
   }
-  
+
   let best = null;
   let maxCount = 0;
   for (const [key, count] of Object.entries(freq)) {
@@ -259,7 +254,7 @@ function findBestContainerSelector(samples) {
       best = key;
     }
   }
-  
+
   if (best) {
     return {
       selector: '.' + best + ', #' + best,
@@ -281,8 +276,7 @@ function extractSelectorsFromHTML(html) {
     genres: [],
     links: []
   };
-  
-  // Find container patterns
+
   const containerMatches = html.match(/class=["']([^"']*?(?:movie|film|torrent|item|card|wrap)[^"']*?)["']/gi) || [];
   for (const match of containerMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -297,8 +291,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find title patterns
+
   const titleMatches = html.match(/class=["']([^"']*?(?:title|name|heading)[^"']*?)["']/gi) || [];
   for (const match of titleMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -313,8 +306,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find poster patterns
+
   const posterMatches = html.match(/<img[^>]*class=["']([^"']*?(?:poster|thumb|img|cover)[^"']*?)["']/gi) || [];
   for (const match of posterMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -329,8 +321,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find rating patterns
+
   const ratingMatches = html.match(/class=["']([^"']*?(?:rating|score|vote)[^"']*?)["']/gi) || [];
   for (const match of ratingMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -345,8 +336,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find year patterns
+
   const yearMatches = html.match(/class=["']([^"']*?(?:year|date|release)[^"']*?)["']/gi) || [];
   for (const match of yearMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -361,8 +351,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find genre patterns
+
   const genreMatches = html.match(/class=["']([^"']*?(?:genre|category|tag)[^"']*?)["']/gi) || [];
   for (const match of genreMatches) {
     const className = match.replace(/class=["']/, '').replace(/["']/, '');
@@ -377,8 +366,7 @@ function extractSelectorsFromHTML(html) {
       }
     }
   }
-  
-  // Find link patterns
+
   const linkMatches = html.match(/href=["']([^"']*\/movie\/[^"']*)["']/gi) || [];
   for (const match of linkMatches) {
     selectors.links.push({
@@ -388,7 +376,7 @@ function extractSelectorsFromHTML(html) {
       matches: linkMatches.length
     });
   }
-  
+
   return selectors;
 }
 
@@ -407,7 +395,7 @@ function rankSelectors(selectors) {
     if (s.source) grouped[s.selector].sources.push(s.source);
     grouped[s.selector].matches++;
   }
-  
+
   return Object.values(grouped).sort((a, b) => b.confidence - a.confidence);
 }
 
@@ -421,68 +409,67 @@ function extractDomain(url) {
 
 export function generateSelectorReport() {
   const selectors = discoverSelectors();
-  
+
   let report = '=== SELECTOR DISCOVERY & TESTING ===\n\n';
-  
+
   report += `📊 Data Summary:\n`;
   report += `  HTML Samples: ${selectors.samples.htmlSample ? '✅' : '❌'}\n`;
   report += `  Movie Samples: ${selectors.samples.movieSample ? '✅' : '❌'}\n`;
   report += `  URL Sample: ${selectors.samples.urlSample || 'None'}\n\n`;
-  
+
   if (selectors.itemContainers.length === 0) {
     report += '⚠️ No selectors found. Try:\n';
     report += '  1. Browse more pages (categories, movies, detail pages)\n';
     report += '  2. Make sure auto-snapshot is enabled\n';
     report += '  3. Record for longer before stopping\n\n';
   }
-  
+
   report += '🎬 ITEM CONTAINERS:\n';
   for (const s of selectors.itemContainers.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   report += '\n📝 TITLES:\n';
   for (const s of selectors.titles.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   report += '\n📷 POSTERS:\n';
   for (const s of selectors.posters.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   report += '\n⭐ RATINGS:\n';
   for (const s of selectors.ratings.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   report += '\n📅 YEARS:\n';
   for (const s of selectors.years.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   report += '\n🔗 LINKS:\n';
   for (const s of selectors.links.slice(0, 5)) {
     report += `  ${s.selector} (${s.confidence}% confidence)\n`;
   }
-  
+
   if (selectors.bestSelector) {
     report += '\n🏆 BEST CONTAINER SELECTOR:\n';
     report += `  ${selectors.bestSelector.selector}\n`;
     report += `  Confidence: ${selectors.bestSelector.confidence}%\n`;
     report += `  Matches: ${selectors.bestSelector.matches}/${selectors.bestSelector.total}\n`;
   }
-  
-  // Show sample HTML for debugging
+
   if (selectors.samples.htmlSample) {
     report += '\n📄 HTML SAMPLE (first 500 chars):\n';
     report += selectors.samples.htmlSample.substring(0, 500) + '...\n';
   }
-  
+
   if (selectors.samples.movieSample) {
     report += '\n🎬 MOVIE SAMPLE:\n';
     report += selectors.samples.movieSample.substring(0, 500) + '...\n';
   }
-  
+
   return report;
 }

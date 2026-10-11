@@ -38,6 +38,17 @@ function setupEventListeners() {
     const blocked = document.getElementById('blockedDomains').value.split(',').map(s => s.trim()).filter(Boolean);
     
     chrome.storage.sync.set({ allowedDomains: allowed, blockedDomains: blocked }, () => {
+      // [FIX] chrome.storage.sync enforces a real per-item quota (8KB) -- a long domain list
+      // (plausible here, given this tool's whole purpose is capturing/filtering across many
+      // sites) can exceed it, and the set() callback still fires either way. Every save
+      // callback in this file previously showed "saved successfully" unconditionally, with no
+      // check of chrome.runtime.lastError at all, so a failed save was indistinguishable from
+      // a successful one -- the user would believe their filters were saved and only discover
+      // otherwise much later. Applied the same check to every storage save/clear call below.
+      if (chrome.runtime.lastError) {
+        showStatus('❌ Failed to save domain filters: ' + chrome.runtime.lastError.message, 'error');
+        return;
+      }
       showStatus('✅ Domain filters saved successfully!', 'success');
     });
   });
@@ -46,6 +57,10 @@ function setupEventListeners() {
     document.getElementById('allowedDomains').value = '';
     document.getElementById('blockedDomains').value = '';
     chrome.storage.sync.set({ allowedDomains: [], blockedDomains: [] }, () => {
+      if (chrome.runtime.lastError) {
+        showStatus('❌ Failed to clear domain filters: ' + chrome.runtime.lastError.message, 'error');
+        return;
+      }
       showStatus('🗑️ Domain filters cleared.', 'info');
     });
   });
@@ -69,10 +84,18 @@ function setupEventListeners() {
     };
     
     chrome.storage.sync.set(settings, () => {
+      if (chrome.runtime.lastError) {
+        showStatus('❌ Failed to save settings: ' + chrome.runtime.lastError.message, 'error');
+        return;
+      }
       // Also update the proxy in base.py if browser proxy is set
       if (settings.browserProxy) {
         try {
-          chrome.storage.local.set({ browserProxy: settings.browserProxy });
+          chrome.storage.local.set({ browserProxy: settings.browserProxy }, () => {
+            if (chrome.runtime.lastError) {
+              console.warn('[options] Failed to mirror browserProxy to local storage:', chrome.runtime.lastError.message);
+            }
+          });
         } catch (e) {}
       }
       
@@ -101,6 +124,10 @@ function setupEventListeners() {
       };
       
       chrome.storage.sync.set(defaults, () => {
+        if (chrome.runtime.lastError) {
+          showStatus('❌ Failed to reset settings: ' + chrome.runtime.lastError.message, 'error');
+          return;
+        }
         loadSettings();
         showStatus('🔄 Settings reset to defaults.', 'info');
       });
@@ -110,15 +137,16 @@ function setupEventListeners() {
   // Export data
   document.getElementById('exportAllData').addEventListener('click', () => {
     chrome.storage.local.get(null, (data) => {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: `sr_data_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-        showStatus('📥 Data exported successfully!', 'success');
+      const content = JSON.stringify(data, null, 2);
+      const filename = `sr_data_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      // [FIX] uses the fixed downloadBlob() above instead of the
+      // duplicated, premature-revoke pattern.
+      downloadBlob(content, filename, 'application/json').then((result) => {
+        if (result.ok) {
+          showStatus('📥 Data exported successfully!', 'success');
+        } else {
+          showStatus('❌ Export failed: ' + (result.error || 'unknown error'), 'error');
+        }
       });
     });
   });
@@ -127,7 +155,15 @@ function setupEventListeners() {
   document.getElementById('clearAllData').addEventListener('click', () => {
     if (confirm('⚠️ This will delete ALL captured data. Are you sure?')) {
       chrome.storage.local.clear(() => {
+        if (chrome.runtime.lastError) {
+          showStatus('❌ Failed to clear local data: ' + chrome.runtime.lastError.message, 'error');
+          return;
+        }
         chrome.storage.sync.clear(() => {
+          if (chrome.runtime.lastError) {
+            showStatus('❌ Failed to clear synced settings: ' + chrome.runtime.lastError.message, 'error');
+            return;
+          }
           showStatus('🗑️ All data cleared.', 'info');
           loadSettings();
         });
@@ -138,15 +174,16 @@ function setupEventListeners() {
   // Export settings
   document.getElementById('exportSettings').addEventListener('click', () => {
     chrome.storage.sync.get(null, (data) => {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      chrome.downloads.download({
-        url: url,
-        filename: `sr_settings_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
-        saveAs: true
-      }, () => {
-        URL.revokeObjectURL(url);
-        showStatus('⚙️ Settings exported!', 'success');
+      const content = JSON.stringify(data, null, 2);
+      const filename = `sr_settings_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      // [FIX] uses the fixed downloadBlob() above instead of the
+      // duplicated, premature-revoke pattern.
+      downloadBlob(content, filename, 'application/json').then((result) => {
+        if (result.ok) {
+          showStatus('⚙️ Settings exported!', 'success');
+        } else {
+          showStatus('❌ Export failed: ' + (result.error || 'unknown error'), 'error');
+        }
       });
     });
   });
@@ -164,6 +201,10 @@ function setupEventListeners() {
         try {
           const settings = JSON.parse(event.target.result);
           chrome.storage.sync.set(settings, () => {
+            if (chrome.runtime.lastError) {
+              showStatus('❌ Failed to import settings: ' + chrome.runtime.lastError.message, 'error');
+              return;
+            }
             loadSettings();
             showStatus('📂 Settings imported successfully!', 'success');
           });
@@ -174,6 +215,61 @@ function setupEventListeners() {
       reader.readAsText(file);
     };
     input.click();
+  });
+}
+
+// [FIX] both downloads in this file originally called URL.revokeObjectURL(url)
+// immediately inside chrome.downloads.download()'s own callback -- fixed first
+// (wait for onChanged before revoking), then the blob: URL itself was replaced
+// with a data: URL after confirming, with a live debug trace, that Brave's own
+// "blob partitioning" privacy feature (brave/brave-browser#38256) silently
+// corrupted the filename for any blob:-based download before any listener
+// code could see the real name. [FIX] confirmed directly, again with real
+// device logs: that only fixed it when saveAs is false. With saveAs: true
+// (both calls below originally passed true, for a native "Save As" dialog),
+// Brave discards the supplied filename entirely and falls back to its own
+// generic default ("download.json") -- not even a smarter MIME-based guess --
+// regardless of URL scheme. The one pattern proven correct in every device
+// log all night is screenshot.js's snapshot download: saveAs: false, filename
+// supplied directly. Matching that here -- saveAs is no longer a parameter;
+// both exports now save silently and immediately to the default Downloads
+// folder, trading the folder-picker dialog for a filename that is correct.
+function downloadBlob(content, filename, mimeType) {
+  return new Promise((resolve) => {
+    const base64 = btoa(unescape(encodeURIComponent(content)));
+    const url = `data:${mimeType};base64,${base64}`;
+    let settled = false;
+
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    }
+
+    chrome.downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" }, (downloadId) => {
+      if (chrome.runtime.lastError || !downloadId) {
+        finish({ ok: false, filename, downloadId: null, error: chrome.runtime.lastError?.message });
+        return;
+      }
+      function onChanged(delta) {
+        if (delta.id !== downloadId) return;
+        if (delta.state && delta.state.current && delta.state.current !== "in_progress") {
+          chrome.downloads.onChanged.removeListener(onChanged);
+          const complete = delta.state.current === "complete";
+          finish({
+            ok: complete, filename, downloadId,
+            error: complete ? undefined : (delta.error && delta.error.current) || delta.state.current
+          });
+        }
+      }
+      chrome.downloads.onChanged.addListener(onChanged);
+      setTimeout(() => {
+        if (!settled) {
+          chrome.downloads.onChanged.removeListener(onChanged);
+          finish({ ok: true, filename, downloadId });
+        }
+      }, 30000);
+    });
   });
 }
 

@@ -296,31 +296,31 @@ function sizeLabel(str) {
   return bytes + ' B';
 }
 
-// [FIX] every download in this file called URL.revokeObjectURL(url)
-// immediately inside chrome.downloads.download()'s own callback -- but
-// that callback fires the moment the download STARTS (a downloadId gets
-// assigned), not when Chrome has actually finished reading the blob's
-// data. Revoking the object URL in that window can make the blob's
-// content inaccessible mid-transfer -- confirmed directly: real,
-// saved files in the user's actual Downloads folder came out named like
-// "efccf81a-3cb6-4ff8-984b-d391ad3e6e57.txt", which is exactly the
-// random-UUID shape Chrome falls back to generating from the blob: URL
-// itself when the originally-specified filename can't be applied. Now
-// waits for chrome.downloads.onChanged to report the download has
-// actually reached a final state (complete/interrupted) before
-// revoking, with saveAs accepted as a parameter so every call site below
-// can share this one, fixed implementation instead of duplicating the
-// broken pattern.
+// [FIX-bloburl] every saveAs:false edit in this file (and the matching one already
+// applied to the background "export" message handler -- see its own comment) stopped
+// the dialog-stacking problem but the random-UUID filenames kept happening anyway,
+// confirmed directly from real device logs on this user's actual browser (Brave).
+// Root cause is one level further back than saveAs or the premature-revoke timing
+// below: this function built a blob: object URL (URL.createObjectURL), and Brave's
+// "blob URL partitioning" privacy feature silently breaks Chrome's ability to resolve
+// the filename actually passed to downloads.download() for a blob: URL -- it falls
+// straight back to the blob's own random UUID instead, regardless of saveAs or timing.
+// The one pattern proven correct in every device log, in both the snapshot path
+// (screenshot.js, always used a data: URL) and the background export handler once it
+// switched over, is a data: URL instead of blob:. Converting content to a base64
+// data: URL here too, for every call site that shares this function.
 function downloadBlob(content, filename, mimeType, saveAs = false) {
   return new Promise((resolve) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
+    // btoa() only handles Latin1, so content (which may contain Arabic text, emoji,
+    // etc.) has to be UTF-8-encoded first -- same escape/encode dance already proven
+    // correct in the background export handler.
+    const base64 = btoa(unescape(encodeURIComponent(content)));
+    const url = `data:${mimeType};base64,${base64}`;
     let settled = false;
 
     function finish(result) {
       if (settled) return;
       settled = true;
-      try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
       resolve(result);
     }
 

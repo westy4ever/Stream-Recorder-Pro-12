@@ -7,6 +7,22 @@ import { isYTSSite, isArabicMovieSite } from './site-detection.js';
 export let expectingSnapshotFilename = null;
 export const pendingAutoSnapshotTimers = {};
 
+// [FIX-bloburl2] confirmed directly on this user's actual browser (Brave): switching every
+// export/extractor/test download from a blob: URL to a data: URL (see downloadBlob()'s own
+// comment in popup.js) stopped the random-UUID names, but Brave STILL doesn't honor the
+// `filename` field passed to chrome.downloads.download() for a data: URL unless something
+// explicitly overrides it in onDeterminingFilename -- every one of those downloads came back
+// named after its own MIME type instead ("download.json", "download.md", "download.pyw").
+// The only download that was ever actually safe was the HTML snapshot, and only because its
+// own onDeterminingFilename handling (below) explicitly re-suggests expectingSnapshotFilename
+// instead of trusting Chrome/Brave's own downloadItem.filename. This map generalizes that same
+// explicit-override trick to every OTHER download the extension makes: whoever calls
+// chrome.downloads.download() records {downloadId: realFilename} here (keyed by the id handed
+// back in download()'s own callback, so there's no race between several downloads in flight at
+// once), and onDeterminingFilename checks it first, before any other logic, and clears the
+// entry once used.
+export const pendingDownloadFilenames = {};
+
 // Track last snapshot time per tab to prevent duplicates
 const lastSnapshotTime = {};
 // [NEW] confirmed directly on a real capture: a user clicking through each

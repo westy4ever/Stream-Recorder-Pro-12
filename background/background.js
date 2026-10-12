@@ -6,7 +6,7 @@ import { initMessageHandlers } from './message-handlers.js';
 import { initDownloadListeners } from './download-listeners.js';
 import { initProxy } from './proxy.js';
 import { initKeyboardShortcuts } from './keyboard-shortcuts.js';
-import { pendingAutoSnapshotTimers, expectingSnapshotFilename } from './screenshot.js';
+import { pendingAutoSnapshotTimers, expectingSnapshotFilename, pendingDownloadFilenames } from './screenshot.js';
 import { CHALLENGE_SOLVING } from './challenge-solver.js';
 
 console.log("Stream Recorder Pro background ready (modularized)");
@@ -82,6 +82,19 @@ initKeyboardShortcuts();
 // This runs synchronously when a download is created
 // The expectingSnapshotFilename flag is set by screenshot.js before calling download
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  // [FIX-bloburl2] checked FIRST, ahead of every other branch below -- see the detailed
+  // comment on pendingDownloadFilenames (screenshot.js) for why this is necessary at all:
+  // Brave does not honor chrome.downloads.download()'s own `filename` option for a data:
+  // URL, so every one of this extension's own downloads needs this explicit override, not
+  // just snapshots.
+  if (Object.prototype.hasOwnProperty.call(pendingDownloadFilenames, downloadItem.id)) {
+    const filename = pendingDownloadFilenames[downloadItem.id];
+    delete pendingDownloadFilenames[downloadItem.id];
+    console.log("[auto-snapshot] ✅ Using pending download filename:", filename);
+    suggest({ filename, conflictAction: "uniquify" });
+    return;
+  }
+
   const isSnapshotDataUri = downloadItem.url && downloadItem.url.startsWith('data:text/html');
 
   console.log("[auto-snapshot] onDeterminingFilename called:", {

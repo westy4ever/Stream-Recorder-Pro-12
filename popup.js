@@ -307,51 +307,28 @@ function sizeLabel(str) {
 // straight back to the blob's own random UUID instead, regardless of saveAs or timing.
 // The one pattern proven correct in every device log, in both the snapshot path
 // (screenshot.js, always used a data: URL) and the background export handler once it
-// switched over, is a data: URL instead of blob:. Converting content to a base64
-// data: URL here too, for every call site that shares this function.
+// switched over, is a data: URL instead of blob:.
+//
+// [FIX-bloburl2] switching to a data: URL (above) stopped the random UUIDs, but confirmed
+// directly from a follow-up device log: every one of these downloads still came out named
+// after its own MIME type instead ("download.json", "download.pyw", ...) -- Brave doesn't
+// honor downloads.download()'s own `filename` option for a data: URL either, full stop.
+// The only download that was ever safe is the HTML snapshot, and only because
+// background.js's onDeterminingFilename listener explicitly re-suggests the real name
+// instead of trusting Chrome/Brave. That override has to happen in the SAME JS context as
+// the listener (the background service worker) to avoid a race -- this popup page can't
+// register the expected filename for the listener to find in time. So instead of calling
+// chrome.downloads.download() here directly, this now asks the background script (via the
+// "downloadFile" message, see its own comment in message-handlers.js) to perform the
+// download itself, where it can register the real filename and the listener can see it.
 function downloadBlob(content, filename, mimeType, saveAs = false) {
   return new Promise((resolve) => {
-    // btoa() only handles Latin1, so content (which may contain Arabic text, emoji,
-    // etc.) has to be UTF-8-encoded first -- same escape/encode dance already proven
-    // correct in the background export handler.
-    const base64 = btoa(unescape(encodeURIComponent(content)));
-    const url = `data:${mimeType};base64,${base64}`;
-    let settled = false;
-
-    function finish(result) {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    }
-
-    chrome.downloads.download({ url, filename, saveAs }, (downloadId) => {
-      if (chrome.runtime.lastError || !downloadId) {
-        finish({ ok: false, filename, downloadId: null, error: chrome.runtime.lastError?.message });
+    chrome.runtime.sendMessage({ type: "downloadFile", content, filename, mimeType, saveAs }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        resolve({ ok: false, filename, downloadId: null, error: chrome.runtime.lastError?.message || "no response from background" });
         return;
       }
-      function onChanged(delta) {
-        if (delta.id !== downloadId) return;
-        if (delta.state && delta.state.current && delta.state.current !== "in_progress") {
-          chrome.downloads.onChanged.removeListener(onChanged);
-          const complete = delta.state.current === "complete";
-          finish({
-            ok: complete, filename, downloadId,
-            error: complete ? undefined : (delta.error && delta.error.current) || delta.state.current
-          });
-        }
-      }
-      chrome.downloads.onChanged.addListener(onChanged);
-      // Safety net: onChanged should always fire, but if it somehow never
-      // does, don't leak the blob's object URL forever across many
-      // exports -- resolve as success after a generous delay instead of
-      // hanging indefinitely (the download itself already started fine,
-      // per the lack of a lastError above).
-      setTimeout(() => {
-        if (!settled) {
-          chrome.downloads.onChanged.removeListener(onChanged);
-          finish({ ok: true, filename, downloadId });
-        }
-      }, 30000);
+      resolve(response);
     });
   });
 }

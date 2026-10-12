@@ -8,7 +8,7 @@ import {
   extractAllYTSPages, buildMagnetLink, isSuspectedBackend,
   isAdDomain, isPopupOrRedirect, isContentDomain, isMediaUrl
 } from './site-detection.js';
-import { captureScreenshot, captureSnapshot, scheduleAutoSnapshot, pendingAutoSnapshotTimers, expectingSnapshotFilename } from './screenshot.js';
+import { captureScreenshot, captureSnapshot, scheduleAutoSnapshot, pendingAutoSnapshotTimers, expectingSnapshotFilename, pendingDownloadFilenames } from './screenshot.js';
 import { exportAsCSV, exportAsHAR, exportAsMarkdown } from './export-utils.js';
 import { getTorrentLinks } from './torrent-utils.js';
 
@@ -314,9 +314,57 @@ export function initMessageHandlers() {
       chrome.downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" }, (downloadId) => {
         if (chrome.runtime.lastError) {
           console.warn('[export] download failed:', chrome.runtime.lastError.message);
+          return;
         }
+        // [FIX-bloburl2] see pendingDownloadFilenames' own comment (screenshot.js) -- the
+        // `filename` passed above is not actually honored by Brave for a data: URL on its
+        // own; this explicit registration is what makes onDeterminingFilename apply it.
+        pendingDownloadFilenames[downloadId] = filename;
       });
       sendResponse({ status: "exporting", format, filename });
+    }
+
+    // ═══ DOWNLOAD FILE (shared by popup.js's downloadBlob) ═══
+    // [FIX-bloburl2] popup.js runs in its own extension page, a separate JS context from this
+    // background service worker, so it can't share pendingDownloadFilenames directly -- it
+    // can't populate the map in time for onDeterminingFilename to see the entry. Routing the
+    // actual chrome.downloads.download() call through here instead (same context as the map
+    // and the listener that reads it) closes that race entirely: the entry is set in this same
+    // download() callback, synchronously before onDeterminingFilename can fire for it.
+    else if (message.type === "downloadFile") {
+      const { content, filename, mimeType, saveAs } = message;
+      const base64 = btoa(unescape(encodeURIComponent(content)));
+      const url = `data:${mimeType};base64,${base64}`;
+      chrome.downloads.download({ url, filename, saveAs: !!saveAs, conflictAction: "uniquify" }, (downloadId) => {
+        if (chrome.runtime.lastError || !downloadId) {
+          sendResponse({ ok: false, filename, downloadId: null, error: chrome.runtime.lastError?.message });
+          return;
+        }
+        pendingDownloadFilenames[downloadId] = filename;
+        let settled = false;
+        function finish(result) {
+          if (settled) return;
+          settled = true;
+          chrome.downloads.onChanged.removeListener(onChanged);
+          sendResponse(result);
+        }
+        function onChanged(delta) {
+          if (delta.id !== downloadId) return;
+          if (delta.state && delta.state.current && delta.state.current !== "in_progress") {
+            const complete = delta.state.current === "complete";
+            finish({
+              ok: complete, filename, downloadId,
+              error: complete ? undefined : (delta.error && delta.error.current) || delta.state.current
+            });
+          }
+        }
+        chrome.downloads.onChanged.addListener(onChanged);
+        // Safety net -- same reasoning as downloadBlob() used to have: the download itself
+        // already started fine (no lastError above), so don't hang the caller forever if
+        // onChanged somehow never fires.
+        setTimeout(() => finish({ ok: true, filename, downloadId }), 30000);
+      });
+      return true; // keep the message channel open for the async sendResponse above
     }
 
     // ═══ ACTION ═══

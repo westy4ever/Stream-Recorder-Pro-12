@@ -19,6 +19,23 @@ function toPythonStringLiteral(s) {
     .replace(/\t/g, '\\t') + "'";
 }
 
+// [FIX] a captured URL/referer/redirect-target embedded directly into a method's own
+// """...""" docstring (not a real code string, just explanatory text) breaks the SAME way an
+// unescaped """ already broke the generated schema dataclass/parser text and the API-
+// endpoints/route-tree overview blocks below -- those three spots were already fixed with
+// this exact .replace(/"""/g, "'''") neutralization, but roughly a dozen other docstring
+// interpolations of real captured data (referer, search endpoint, pagination pattern,
+// journey/embed stream samples, redirect from/to, mirror hosts, base64-decoded sample,
+// detail-route fullUrl) never got the same treatment -- any one of those containing a literal
+// """ (not impossible in an arbitrary captured URL/query-string/referer) would prematurely
+// close the docstring and corrupt the rest of the generated file, exactly like the schema
+// case did before it was fixed. Centralizing the fix here so every docstring interpolation of
+// captured/analysis data uses the same proven neutralization instead of each repeating it
+// ad-hoc (or, as happened, some forgetting it entirely).
+function safeDocstringText(s) {
+  return String(s).replace(/"""/g, "'''");
+}
+
 // ═══ MAIN EXPORT FUNCTIONS ═══
 
 export function generatePythonExtractor(siteName, capturedData) {
@@ -852,6 +869,19 @@ function toPythonStringLiteralForTests(s) {
 }
 
 function generateTestsFromCapturedData(siteName, className, safeName, networkLog, xhrBodies, contentPipeline) {
+  // [FIX] siteName is developer-typed, not scraped from a site -- lower risk than the
+  // captured-data escaping this file already does elsewhere, but still gets interpolated
+  // directly into real double-quoted Python string literals below (log("Running tests for
+  // ${siteName}")); a name containing a literal " or \ would still break the generated file,
+  // same bug class, just a less likely trigger. Escaped once here for every log() call below
+  // that embeds it mid-string, consistent with how every other embedded value in this file
+  // is treated.
+  const siteNameDQ = String(siteName)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
   const testData = {
     // [FIX] confirmed directly, via a real test with no captured
     // samples at all: these used to fall back to a hardcoded, generic
@@ -901,7 +931,7 @@ function generateTestsFromCapturedData(siteName, className, safeName, networkLog
   code += `    def setUp(self):\n`;
   code += `        """Set up test environment."""\n`;
   code += `        self.extractor = ${className}()\n`;
-  code += `        log("Running tests for ${siteName}")\n\n`;
+  code += `        log("Running tests for ${siteNameDQ}")\n\n`;
 
   code += `    def test_get_categories(self):\n`;
   code += `        """Test getting categories from ${siteName}."""\n`;
@@ -2013,6 +2043,20 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
 // ═══ GENERATE FULL PLUGIN EXTRACTOR ═══
 
 function generateFullPluginExtractor(siteName, analysis) {
+  // [FIX] siteName is developer-typed, not scraped from a site -- much lower risk than the
+  // captured/analysis data this file is otherwise careful to escape, but it's still
+  // interpolated directly into real double-quoted Python string literals all through this
+  // function's log(...) calls below, so a name containing a literal " or \ would still break
+  // the generated file the same way. self._site_name and EXTRACTOR_METADATA["name"] use
+  // toPythonStringLiteral() directly since those are whole, standalone literals; this
+  // escaped-but-unquoted form is for every log("${siteName}: ...".format(...)) call, where
+  // siteName sits mid-string alongside static text that already owns the surrounding quotes.
+  const siteNameDQ = String(siteName)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
   const safeName = siteName.toLowerCase().replace(/[^a-z0-9]/g, '_');
   // [FIX] confirmed directly: the old className logic only capitalized the
   // first letter of the raw siteName and never sanitized the rest, so any
@@ -2114,7 +2158,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        self.main_url = ${toPythonStringLiteral(mainUrlValue)}\n`;
   code += `        self.base_url = self.main_url\n`;
   code += `        self._resolved_base = self.main_url\n`;
-  code += `        self._site_name = "${siteName}"\n`;
+  code += `        self._site_name = ${toPythonStringLiteral(siteName)}\n`;
   code += `        self._site_label = self._site_name\n`;
   code += `        self._cache = {}  # Simple cache for performance\n\n`;
 
@@ -2145,10 +2189,10 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `            # TODO: Add categories manually\n`;
     code += `            # Example: categories.append({"title": "Movies", "url": "/category/movies/"})\n`;
   }
-  code += `            log("${siteName}: Found {} categories".format(len(categories)))\n`;
+  code += `            log("${siteNameDQ}: Found {} categories".format(len(categories)))\n`;
   code += `            return categories\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Error getting categories: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Error getting categories: {}".format(e))\n`;
   code += `            return []\n`;
   code += `\n`;
 
@@ -2157,7 +2201,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        """\n`;
   code += `        Get items from a category page.\n`;
   if (analysis.paginationPatterns.length > 0) {
-    code += `        Pagination pattern: ${analysis.paginationPatterns[0]}\n`;
+    code += `        Pagination pattern: ${safeDocstringText(analysis.paginationPatterns[0])}\n`;
   }
   // [NEW] confirmed directly: this analysis step already correctly
   // detects real JSON field names (jsonFields) and real embed-style
@@ -2269,7 +2313,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            # Check cache\n`;
   code += `            cache_key = f"category_{url}"\n`;
   code += `            if cache_key in self._cache:\n`;
-  code += `                log("${siteName}: Using cached category items")\n`;
+  code += `                log("${siteNameDQ}: Using cached category items")\n`;
   code += `                return self._cache[cache_key]\n`;
   code += `            \n`;
   code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
@@ -2296,7 +2340,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                    found = soup.select(selector)\n`;
   code += `                    if found:\n`;
   code += `                        containers = found\n`;
-  code += `                        log("${siteName}: Found {} items using selector '{}'".format(len(found), selector))\n`;
+  code += `                        log("${siteNameDQ}: Found {} items using selector '{}'".format(len(found), selector))\n`;
   code += `                        break\n`;
   code += `                \n`;
   code += `                if not containers:\n`;
@@ -2346,7 +2390,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                            "type": "movie"\n`;
   code += `                        })\n`;
   code += `                    except Exception as e:\n`;
-  code += `                        log("${siteName}: Error parsing item: {}".format(e))\n`;
+  code += `                        log("${siteNameDQ}: Error parsing item: {}".format(e))\n`;
   code += `                        continue\n`;
   code += `            else:\n`;
   code += `                pattern = r'<[^>]*class="[^"]*(?:movie|film|browse)[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>.*?<img[^>]*src="([^"]+)"[^>]*>.*?<[^>]*>([^<]+)</'\n`;
@@ -2364,10 +2408,10 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                        })\n`;
   code += `            \n`;
   code += `            self._cache[cache_key] = items\n`;
-  code += `            log("${siteName}: Found {} items on page {}".format(len(items), page))\n`;
+  code += `            log("${siteNameDQ}: Found {} items on page {}".format(len(items), page))\n`;
   code += `            return items\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Error getting category items: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Error getting category items: {}".format(e))\n`;
   code += `            return []\n`;
   code += `\n`;
 
@@ -2376,7 +2420,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        """\n`;
   code += `        Search for content on ${siteName}.\n`;
   if (analysis.searchEndpoint) {
-    code += `        Endpoint: ${analysis.searchEndpoint}\n`;
+    code += `        Endpoint: ${safeDocstringText(analysis.searchEndpoint)}\n`;
   }
   code += `        """\n`;
   code += `        try:\n`;
@@ -2401,10 +2445,10 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            \n`;
   code += `            items = []\n`;
   code += `            # TODO: Parse search results\n`;
-  code += `            log("${siteName}: Found {} search results for '{}'".format(len(items), query))\n`;
+  code += `            log("${siteNameDQ}: Found {} search results for '{}'".format(len(items), query))\n`;
   code += `            return items\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Search error: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Search error: {}".format(e))\n`;
   code += `            return []\n`;
   code += `\n`;
 
@@ -2413,7 +2457,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        """\n`;
   code += `        Get detail page data.\n`;
   if (analysis.detailPatterns.length > 0) {
-    code += `        Detail URL pattern: ${analysis.detailPatterns[0]}\n`;
+    code += `        Detail URL pattern: ${safeDocstringText(analysis.detailPatterns[0])}\n`;
   }
   // [NEW] additive confirmation from a different, independent source --
   // a real click that actually navigated to a URL shaped like
@@ -2425,8 +2469,8 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `        \n`;
     code += `        DETECTED: a real click actually navigated to a URL shaped like\n`;
     code += `        a detail page (confirmed, not just a pattern guess):\n`;
-    code += `            ${dr.fullUrl}\n`;
-    code += `        (path segment "${dr.routeKey}", id "${dr.routeId}")\n`;
+    code += `            ${safeDocstringText(dr.fullUrl)}\n`;
+    code += `        (path segment "${safeDocstringText(dr.routeKey)}", id "${safeDocstringText(dr.routeId)}")\n`;
   }
   // [NEW] confirmed directly: request headers were never examined
   // anywhere in this file, even though real sites built by hand this
@@ -2438,7 +2482,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   if (analysis.refererSample) {
     code += `        \n`;
     code += `        DETECTED: this site's own real requests carried this Referer:\n`;
-    code += `            ${analysis.refererSample}\n`;
+    code += `            ${safeDocstringText(analysis.refererSample)}\n`;
     code += `        If fetch() below fails, try passing this explicitly instead of\n`;
     code += `        self.main_url -- they are not always the same value.\n`;
   }
@@ -2446,7 +2490,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        try:\n`;
   code += `            cache_key = f"detail_{url}"\n`;
   code += `            if cache_key in self._cache:\n`;
-  code += `                log("${siteName}: Using cached detail page")\n`;
+  code += `                log("${siteNameDQ}: Using cached detail page")\n`;
   code += `                return self._cache[cache_key]\n`;
   code += `            \n`;
   code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
@@ -2580,13 +2624,13 @@ function generateFullPluginExtractor(siteName, analysis) {
   }
   code += `            \n`;
   code += `            self._cache[cache_key] = data\n`;
-  code += `            log("${siteName}: Extracted page: {} ({} servers)".format(\n`;
+  code += `            log("${siteNameDQ}: Extracted page: {} ({} servers)".format(\n`;
   code += `                data.get("title", "Unknown"),\n`;
   code += `                len(data.get("servers", []))\n`;
   code += `            ))\n`;
   code += `            return data\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Error getting page: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Error getting page: {}".format(e))\n`;
   code += `            return {}\n`;
   code += `\n`;
 
@@ -2634,7 +2678,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                        "name": name.strip() or "Download"\n`;
   code += `                    })\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Error extracting downloads: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Error extracting downloads: {}".format(e))\n`;
   code += `        return downloads\n`;
   code += `\n`;
 
@@ -2749,7 +2793,7 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `        """\n`;
     code += `        Decode a base64-encoded string that may itself be (or contain) a real URL.\n`;
     code += `        Confirmed present in this site's captured traffic -- a real payload from this\n`;
-    code += `        session decoded to: ${analysis.base64UrlPayloads[0].decodedSample}\n`;
+    code += `        session decoded to: ${safeDocstringText(analysis.base64UrlPayloads[0].decodedSample)}\n`;
     code += `        """\n`;
     code += `        try:\n`;
     code += `            padded = text + '=' * (-len(text) % 4)\n`;
@@ -2787,7 +2831,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   if (analysis.hasRedirectingResolvers && analysis.redirectSample) {
     code += `        \n`;
     code += `        WARNING: a captured request to a stream host actually redirected to a DIFFERENT\n`;
-    code += `        domain before resolving (captured: ${analysis.redirectSample.from} -> ${analysis.redirectSample.to}).\n`;
+    code += `        domain before resolving (captured: ${safeDocstringText(analysis.redirectSample.from)} -> ${safeDocstringText(analysis.redirectSample.to)}).\n`;
     code += `        Build any resolver call (e.g. a pass_md5-style request) against the domain the\n`;
     code += `        page actually redirected TO, not the original URL's domain -- using the wrong one\n`;
     code += `        here is exactly the bug already found and fixed once in this plugin's real\n`;
@@ -2796,7 +2840,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   }
   if (analysis.hasMultipleMirrorHosts) {
     code += `        \n`;
-    code += `        This site exposes multiple mirror hosts per title (captured: ${analysis.mirrorHostSample.join(', ')}).\n`;
+    code += `        This site exposes multiple mirror hosts per title (captured: ${safeDocstringText(analysis.mirrorHostSample.join(', '))}).\n`;
     code += `        Real sites of this shape often have several QUALITIES, each with several MIRROR\n`;
     code += `        hosts -- treat quality and mirror/host as two separate axes rather than one flat\n`;
     code += `        list: each server dict below should carry both a "quality" AND a "host" (or\n`;
@@ -2813,7 +2857,7 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `        \n`;
     code += `        DETECTED: this extension's own recording already identified a\n`;
     code += `        real stream URL live, during capture (strongest available signal):\n`;
-    code += `            ${analysis.journeyStreamSample}\n`;
+    code += `            ${safeDocstringText(analysis.journeyStreamSample)}\n`;
     code += `        Start from this one before anything else below.\n`;
   }
   // [NEW] confirmed directly: when a server's real "stream" is actually
@@ -2829,7 +2873,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   if (analysis.embedStreamSample) {
     code += `        \n`;
     code += `        DETECTED: a real embed-style stream source was captured:\n`;
-    code += `            ${analysis.embedStreamSample}\n`;
+    code += `            ${safeDocstringText(analysis.embedStreamSample)}\n`;
     code += `        Try passing a URL like this straight to the shared dispatch first --\n`;
     code += `        many embed hosts (e.g. voe.sx, egybestvid.com) already resolve\n`;
     code += `        correctly with NO site-specific code at all:\n`;
@@ -2840,7 +2884,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   }
   code += `        """\n`;
   code += `        try:\n`;
-  code += `            log("${siteName}: Extracting stream from: {}".format(url[:100]))\n`;
+  code += `            log("${siteNameDQ}: Extracting stream from: {}".format(url[:100]))\n`;
   code += `            \n`;
   code += `            if '.m3u8' in url or '.mp4' in url:\n`;
   code += `                return _correct_stream_url(url), "HD", url, []\n`;
@@ -2911,14 +2955,14 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            \n`;
   code += `            return None, "", url, []\n`;
   code += `        except Exception as e:\n`;
-  code += `            log("${siteName}: Extract stream error: {}".format(e))\n`;
+  code += `            log("${siteNameDQ}: Extract stream error: {}".format(e))\n`;
   code += `            return None, "", url, []\n`;
   code += `\n`;
 
   // ═══ Metadata ═══
   code += `\n# ─── Export Metadata ────────────────────────────────────────────────────────\n`;
   code += `EXTRACTOR_METADATA = {\n`;
-  code += `    "name": "${siteName}",\n`;
+  code += `    "name": ${toPythonStringLiteral(siteName)},\n`;
   code += `    "class": "${className}",\n`;
   code += `    "version": "4.0.0",\n`;
   code += `    "generated": "${new Date().toISOString()}",\n`;

@@ -1,5 +1,5 @@
 // network-capture.js - WebRequest listeners
-import { state, shouldRecordUrl, shouldRecordTab, passesFilter, safeBodyToString, headersToObject, scheduleSave } from './state.js';
+import { state, shouldRecordUrl, shouldRecordTab, passesFilter, safeBodyToString, headersToObject, scheduleSave, stateReadyPromise } from './state.js';
 import { CONFIG, YTS_API_PATTERNS, ARABIC_API_PATTERNS, CLOUDFLARE_CHALLENGE_HEADERS, CLOUDFLARE_CHALLENGE_STATUSES } from './config.js';
 import { isSuspectedBackend, isDownloadUrl } from './site-detection.js';
 import { handleCloudflareChallenge } from './challenge-solver.js';
@@ -7,7 +7,21 @@ import { handleCloudflareChallenge } from './challenge-solver.js';
 export function initNetworkCapture() {
   // ═══ onBeforeRequest ═══
   chrome.webRequest.onBeforeRequest.addListener(
-    (details) => {
+    async (details) => {
+      // [FIX] this is the gatekeeper: every other listener below only acts on
+      // a requestId that THIS one already put in s.pending. A service-worker
+      // restart (routine under MV3 after ~30s idle, and the very event that
+      // wakes a fresh worker back up is often one of these webRequest events
+      // itself) resets `state` to its hardcoded defaults until
+      // stateReadyPromise's chrome.storage.local.get() resolves -- reading
+      // s.recording before that lands silently drops the request forever,
+      // with no error, which is exactly what two separate real recordings
+      // this session showed (rich multi-minute action logs, completely
+      // empty networkLog/xhrBodies the whole time). Awaiting here first
+      // costs nothing once the promise has already settled (the overwhelming
+      // majority of calls, after the first) and guarantees correctness for
+      // the ones that matter.
+      await stateReadyPromise;
       const s = state;
       if (!s.recording) return;
       if (!passesFilter(details.type)) return;
@@ -58,7 +72,8 @@ export function initNetworkCapture() {
 
   // ═══ onSendHeaders ═══
   chrome.webRequest.onSendHeaders.addListener(
-    (details) => {
+    async (details) => {
+      await stateReadyPromise;
       const s = state;
       if (!s.recording) return;
       const entry = s.pending[details.requestId];
@@ -70,7 +85,8 @@ export function initNetworkCapture() {
 
   // ═══ onHeadersReceived ═══
   chrome.webRequest.onHeadersReceived.addListener(
-    (details) => {
+    async (details) => {
+      await stateReadyPromise;
       const s = state;
       if (!s.recording) return;
       const entry = s.pending[details.requestId];
@@ -117,7 +133,8 @@ export function initNetworkCapture() {
 
   // ═══ onBeforeRedirect ═══
   chrome.webRequest.onBeforeRedirect.addListener(
-    (details) => {
+    async (details) => {
+      await stateReadyPromise;
       const s = state;
       if (!s.recording) return;
       const entry = s.pending[details.requestId];
@@ -134,7 +151,8 @@ export function initNetworkCapture() {
 
   // ═══ onCompleted ═══
   chrome.webRequest.onCompleted.addListener(
-    (details) => {
+    async (details) => {
+      await stateReadyPromise;
       const s = state;
       const entry = s.pending[details.requestId];
       if (!entry) return;
@@ -168,7 +186,8 @@ export function initNetworkCapture() {
 
   // ═══ onErrorOccurred ═══
   chrome.webRequest.onErrorOccurred.addListener(
-    (details) => {
+    async (details) => {
+      await stateReadyPromise;
       const s = state;
       const entry = s.pending[details.requestId];
       if (!entry) return;

@@ -440,6 +440,75 @@ function extractArabicMovies() {
   return movies;
 }
 
+// ═══ WECIMA ENCODED WATCH/DOWNLOAD LINK DECODER ═══
+// [NEW] Wecima's detail pages encode the real target of BOTH its watch-server buttons
+// (<btn data-url="...">) and its download-section items (<li class="download-item"
+// data-href="...">) in a custom data-* attribute instead of a real href/src --
+// confirmed directly against real captured markup for both. Nothing in this extension
+// ever read data-href/data-url/data-link anywhere (the click handler further down this
+// file only ever reads the real anchor.href DOM property and
+// anchor.hasAttribute('download')), so these links were completely invisible to
+// getStreamLinks and to the "Copy Stream Links" button, however long a recording ran
+// or however many snapshots were taken -- this was never a detection-timing problem,
+// nothing ever looked at the right attribute in the first place.
+//
+// The encoding itself (reverse-engineered from real samples; the same scheme is
+// decoded server-side in wecima.py's _decode_wecima_url): the value is base64, but
+// missing its fixed "aHR0c" prefix (the start of base64("https://...")) -- AND the
+// download-section variant additionally has literal "+" characters sprinkled into it
+// at irregular points. Confirmed directly: those "+" are NOT real base64 padding/
+// alphabet characters, just junk inserted to break a naive decode -- treating them as
+// base64's real "+" (alphabet value 62, the standard reading) decodes the domain
+// correctly and then turns everything after it to garbage; stripping every literal "+"
+// before prepending "aHR0c" decoded all 3 real download-section samples tested
+// perfectly (luluvdo.com, dhcplay.com, doodstream.com).
+function _decodeWecimaDataAttr(raw) {
+  if (!raw) return null;
+  try {
+    const stripped = raw.replace(/\+/g, '');
+    let full = 'aHR0c' + stripped;
+    const pad = (4 - (full.length % 4)) % 4;
+    full += '='.repeat(pad);
+    const decoded = atob(full);
+    if (/^https?:\/\//.test(decoded)) return decoded;
+  } catch (e) {
+    // not valid base64 once stripped/padded -- not one of these encoded links
+  }
+  return null;
+}
+
+function extractWecimaEncodedLinks() {
+  if (!isArabicMovieSite()) return [];
+
+  const results = [];
+  const seen = new Set();
+  const candidates = document.querySelectorAll('[data-url], [data-href], [data-link]');
+
+  for (const el of candidates) {
+    for (const attr of ['data-url', 'data-href', 'data-link']) {
+      const raw = el.getAttribute(attr);
+      if (!raw) continue;
+      const decoded = _decodeWecimaDataAttr(raw);
+      if (!decoded || seen.has(decoded)) continue;
+      seen.add(decoded);
+
+      // [NEW] best-effort label only, used for display in the popup -- Wecima's watch-
+      // server buttons and download-section items don't share one reliable class name
+      // across every theme variant seen so far, so this stays loose. Misclassifying
+      // never loses the link, it only mislabels it.
+      const isDownload = !!el.closest('.download-item, .downloads, [class*="download"]');
+
+      results.push({
+        url: decoded,
+        kind: isDownload ? 'download' : 'watch',
+        label: (el.textContent || '').trim().slice(0, 60) || null
+      });
+    }
+  }
+
+  return results;
+}
+
 // ═══ SAVEFILES EXTRACTION ═══
 function extractSaveFiles() {
   if (!isSaveFilesSite()) return null;
@@ -653,6 +722,21 @@ function checkSPAContentChange(newContent = false) {
       }
     }
 
+    // [NEW] runs independently of the if/else-if chain above -- isArabicMovieSite()
+    // matches both Wecima's listing pages AND its detail pages, and the encoded watch/
+    // download links this looks for only ever show up on the latter, so this isn't
+    // mutually exclusive with the 'arabic_movies_extracted' branch's own listing-page scrape.
+    if (isArabicMovieSite()) {
+      const encodedLinks = extractWecimaEncodedLinks();
+      if (encodedLinks.length > 0) {
+        chrome.runtime.sendMessage({
+          type: 'wecima_encoded_links_extracted',
+          data: encodedLinks,
+          url: currentUrl
+        }).catch(() => {});
+      }
+    }
+
     chrome.runtime.sendMessage({
       type: "spa_navigate",
       url: currentUrl,
@@ -779,6 +863,17 @@ chrome.runtime.sendMessage({ type: "getRecordingStatus" }, (response) => {
             chrome.runtime.sendMessage({
               type: 'arabic_movies_extracted',
               data: movies,
+              url: window.location.href
+            });
+          }
+          // [NEW] see extractWecimaEncodedLinks() above -- a detail page's watch-server
+          // and download-section links are the ones this is actually for; running it
+          // alongside the listing-page scrape above (harmless no-op if neither is present).
+          const encodedLinks = extractWecimaEncodedLinks();
+          if (encodedLinks.length > 0) {
+            chrome.runtime.sendMessage({
+              type: 'wecima_encoded_links_extracted',
+              data: encodedLinks,
               url: window.location.href
             });
           }

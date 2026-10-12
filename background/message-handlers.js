@@ -154,11 +154,114 @@ export function initMessageHandlers() {
           // total payload size stays reasonable; passing them through in full is what makes
           // the JSON export's own promise of completeness actually true.
           screenshots: s.screenshots
-        } 
+        }
       });
       return true;
     }
-    
+
+    // ═══ IMPORT HTML SNAPSHOTS ═══
+    // [NEW] confirmed directly: generatePluginExtractor()/generateCompleteExtractor()
+    // (export-generator.js) and the selector-discovery pipeline they call
+    // (discoverSelectorsFromCapturedData -> extractSelectorsFromHTML) already work
+    // perfectly well on plain saved HTML text -- extractSelectorsFromHTML() just
+    // regex-scans body text for class names, no live network capture needed -- but
+    // nothing anywhere in this extension could ever GET a saved .html file INTO
+    // networkLog/xhrBodies in the first place. The only populated path was the live
+    // recorder (page-hook.js -> "xhrResponseBody" above). This closes that gap: a
+    // user-selected HTML file (read client-side in popup.js, no filesystem access
+    // needed here) is wrapped into the exact networkLog + xhrBodies shapes those
+    // real capture paths already produce, so every downstream consumer (analysis,
+    // generation, JSON/CSV/HAR export, diffing) works on it with zero changes of
+    // its own -- "imported" is just another source, not a special case.
+    else if (message.type === "importHtmlSnapshots") {
+      const files = Array.isArray(message.files) ? message.files : [];
+      let added = 0;
+
+      for (const file of files) {
+        const rawBody = (file && typeof file.body === "string") ? file.body : "";
+        if (!rawBody) continue;
+
+        // Prefer a real URL the page itself declares (canonical link or
+        // og:url meta -- both standard on any WordPress/CMS site, and
+        // present on every real snapshot this was built against) over
+        // guessing one. Falls back to the primary domain from an earlier
+        // live recording, then to a clearly-fake placeholder host, so a
+        // missing URL can never crash downstream `new URL()` calls (those
+        // already wrap in try/catch, but a real host lets baseUrl/category
+        // detection actually work whenever one truly is available).
+        let url = "";
+        const canonicalM = rawBody.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
+        const ogUrlM = rawBody.match(/<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i);
+        const safeName = encodeURIComponent((file.filename || "snapshot").replace(/\.[^.]+$/, ""));
+        if (canonicalM) url = canonicalM[1];
+        else if (ogUrlM) url = ogUrlM[1];
+        else if (s.primaryDomain) url = `https://${s.primaryDomain}/${safeName}`;
+        else url = `https://imported.local/${safeName}`;
+
+        // Same truncation convention real captures use (page-hook.js's own
+        // truncate()), so an imported file can never blow past the same
+        // per-body size budget a live recording respects.
+        const truncated = rawBody.length > CONFIG.MAX_BODY_CHARS;
+        const body = truncated ? rawBody.slice(0, CONFIG.MAX_BODY_CHARS) : rawBody;
+        const timestamp = Date.now();
+
+        s.networkLog.push({
+          url,
+          method: "GET",
+          statusCode: 200,
+          responseHeaders: { "content-type": "text/html" },
+          requestHeaders: {},
+          timestamp,
+          fromCache: false,
+          via: "html_import",
+          importedFilename: file.filename || null
+        });
+
+        s.xhrBodies.push({
+          timestamp,
+          tabId: null,
+          url,
+          method: "GET",
+          status: 200,
+          via: "html_import",
+          truncated,
+          body,
+          streamUrls: [],
+          isStreamApi: false,
+          isKnownApi: false,
+          jsonData: null,
+          contentType: "text/html"
+        });
+
+        added++;
+      }
+
+      if (added > 0) {
+        if (s.networkLog.length > CONFIG.MAX_NETWORK_LOG_SIZE) {
+          s.networkLog = s.networkLog.slice(-CONFIG.MAX_NETWORK_LOG_SIZE);
+        }
+        if (s.xhrBodies.length > CONFIG.MAX_XHR_BODIES) {
+          s.xhrBodies = s.xhrBodies.slice(-CONFIG.MAX_XHR_BODIES);
+        }
+        persistState();
+      }
+
+      sendResponse({
+        status: added > 0 ? "ok" : "no_content",
+        added,
+        total: s.xhrBodies.length,
+        data: {
+          filterMode: s.filterMode,
+          actions: s.actions,
+          networkLog: s.networkLog,
+          xhrBodies: s.xhrBodies,
+          userJourney: s.userJourney,
+          contentPipeline: s.contentPipeline
+        }
+      });
+      return true;
+    }
+
     // ═══ EXPORT ═══
     else if (message.type === "export") {
       const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, userJourney: s.userJourney, contentPipeline: s.contentPipeline };

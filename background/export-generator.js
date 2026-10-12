@@ -1731,10 +1731,79 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   }
 
   // Extract pagination
+  // [FIX] confirmed directly against a real site (Fivetv, a WordPress build):
+  // this only ever recognized QUERY-STRING pagination ("?page=2"). WordPress's
+  // own standard pager -- by far the most common shape on sites this
+  // generator targets -- uses a PATH segment instead ("/page/2/"), which this
+  // loop silently produced zero matches for, on networkLog alone. Path-based
+  // pagination is now recognized too, from the same networkLog scan.
   for (const entry of networkLog) {
-    if (entry.url && entry.url.includes('page=')) {
+    if (!entry.url) continue;
+    if (entry.url.includes('page=')) {
       analysis.paginationPatterns.push(entry.url.replace(/page=\d+/, 'page={page}'));
+    } else if (/\/page\/\d+\/?/.test(entry.url)) {
+      analysis.paginationPatterns.push(entry.url.replace(/\/page\/\d+\/?/, '/page/{page}/'));
     }
+  }
+
+  // [NEW] a second, independent pagination source that needs no click-trail
+  // (`actions`) and no live network capture at all -- it reads the "next
+  // page" link's own real markup directly out of captured/imported page
+  // HTML. Confirmed real need: a category/listing page's pager nav is
+  // already present, in full, on that single page (every page number plus
+  // the "next" link), so there was never a reason this required watching
+  // the user actually click to page 2 -- the only reason it did was that
+  // nothing had looked at the HTML itself before. Covers the two markup
+  // shapes actually confirmed across real sites this session: a standard
+  // <link rel="next"> head tag, and the common WordPress-and-lookalike
+  // pager anchor (class containing "page-numbers"/"pagination"/"pager",
+  // text containing "next"/"التالي"/an arrow glyph, or marked
+  // rel="next"/aria-label="Next"). Deliberately does NOT try to diff two
+  // snapshot pages against each other to infer a pattern -- confirmed
+  // unnecessary once the real pager markup is read directly, and diffing
+  // would be a much larger, more fragile piece of logic for no real gain.
+  const nextLinkPatterns = [
+    /<link[^>]+rel=["']next["'][^>]+href=["']([^"']+)["']/i,
+    /<a[^>]+rel=["']next["'][^>]+href=["']([^"']+)["']/i,
+    /<a[^>]+href=["']([^"']+)["'][^>]*\srel=["']next["']/i,
+    /<a[^>]+href=["']([^"']+)["'][^>]+aria-label=["'][^"']*next[^"']*["']/i,
+    // class="...page-numbers..."/"...pagination..."/"...pager..." anchor,
+    // whose own link text or aria-label marks it as the "next" one rather
+    // than a plain numbered page link -- checked below via a second pass
+    // over the matched anchor's own text, not inferred from the regex alone.
+  ];
+  const nextWordPattern = /next|التالي|»|›|&raquo;/i;
+  const pagerAnchorPattern = /<a[^>]+class=["'][^"']*(?:page-numbers|pagination|pager)[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]{0,40}?)<\/a>/gi;
+
+  for (const body of xhrBodies) {
+    if (!body.body || body.body.length < 200) continue;
+
+    let found = null;
+    for (const re of nextLinkPatterns) {
+      const m = body.body.match(re);
+      if (m) { found = m[1]; break; }
+    }
+    if (!found) {
+      let m;
+      pagerAnchorPattern.lastIndex = 0;
+      while ((m = pagerAnchorPattern.exec(body.body)) !== null) {
+        if (nextWordPattern.test(m[2])) { found = m[1]; break; }
+      }
+    }
+    if (!found) continue;
+
+    try {
+      const resolved = body.url ? new URL(found, body.url).href : found;
+      let pattern = resolved;
+      if (/\/page\/\d+\/?/.test(pattern)) pattern = pattern.replace(/\/page\/\d+\/?/, '/page/{page}/');
+      else if (/page=\d+/.test(pattern)) pattern = pattern.replace(/page=\d+/, 'page={page}');
+      if (!analysis.paginationPatterns.includes(pattern)) {
+        analysis.paginationPatterns.push(pattern);
+      }
+      if (!analysis.nextPageSample) {
+        analysis.nextPageSample = { from: body.url || '', nextUrl: resolved };
+      }
+    } catch (e) { /* unresolvable relative URL with no body.url to anchor it -- skip */ }
   }
 
   // [NEW] detect download-link pages, so the generated extractor gets a starting

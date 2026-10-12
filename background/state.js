@@ -24,6 +24,14 @@ export let state = {
     source: '',
     movieList: [],
     downloadLinks: [],
+    // [NEW] separate from downloadLinks above on purpose: downloadLinks only ever gets
+    // populated once a REAL chrome.downloads event fires or savefiles.com's own page is
+    // scraped -- i.e. only after the user has already clicked through to a resolved file.
+    // encodedLinks holds links decoded straight out of the page's DOM (Wecima's
+    // data-url/data-href-encoded watch-server and download-section entries) the moment
+    // they appear, before anything is clicked -- see extractWecimaEncodedLinks() in
+    // content.js for why these were invisible to every other capture path.
+    encodedLinks: [],
     metadata: {},
     sequence: []
   },
@@ -252,6 +260,7 @@ export function buildPersistPayload() {
       ...s.contentPipeline,
       movieList: s.contentPipeline.movieList ? s.contentPipeline.movieList.slice(0, 50) : [],
       downloadLinks: s.contentPipeline.downloadLinks ? s.contentPipeline.downloadLinks.slice(0, 20) : [],
+      encodedLinks: s.contentPipeline.encodedLinks ? s.contentPipeline.encodedLinks.slice(-50) : [],
       sequence: s.contentPipeline.sequence ? s.contentPipeline.sequence.slice(0, 100) : []
     },
     screenshots: s.screenshots.slice(-CONFIG.MAX_SCREENSHOTS).map(s => ({
@@ -273,28 +282,43 @@ export function persistState() {
       chrome.storage.session.set({ srStateBackup: payload }).catch(() => {});
     } catch (e) {}
 
+    // [FIX] every .slice(0, N) below used to take the FIRST N entries of
+    // payload.* -- but payload.* (built by buildPersistPayload() above)
+    // is already trimmed down to the most recent entries when it's long,
+    // so re-slicing from the front here threw away exactly the newest,
+    // most relevant data (the actual stream URL, captured late in a
+    // session) and kept whatever was oldest instead (page-load junk:
+    // ads, trackers, analytics). This is the copy that actually survives
+    // a service-worker restart (chrome.storage.local, not the in-memory
+    // state), so the bug only bit intermittently -- exactly when a
+    // restart happened to land mid-session -- which is why "Stream
+    // Links" worked sometimes and not others on the exact same site.
+    // Switched every one of these to .slice(-N), keeping the most recent
+    // N entries, consistent with how buildPersistPayload(), encodedLinks
+    // just below, and cleanupMemory() all already do it.
     const compressed = {
       recording: payload.recording,
       filterMode: payload.filterMode,
       autoSnapshot: payload.autoSnapshot,
       primaryDomain: payload.primaryDomain,
-      actions: payload.actions.slice(0, 50),
-      networkLog: payload.networkLog.slice(0, 50),
-      xhrBodies: payload.xhrBodies.slice(0, 50),
-      userJourney: payload.userJourney.slice(0, 50),
+      actions: payload.actions.slice(-50),
+      networkLog: payload.networkLog.slice(-50),
+      xhrBodies: payload.xhrBodies.slice(-50),
+      userJourney: payload.userJourney.slice(-50),
       contentPipeline: {
         source: payload.contentPipeline.source || '',
-        movieList: payload.contentPipeline.movieList ? payload.contentPipeline.movieList.slice(0, 20) : [],
-        downloadLinks: payload.contentPipeline.downloadLinks ? payload.contentPipeline.downloadLinks.slice(0, 10) : [],
+        movieList: payload.contentPipeline.movieList ? payload.contentPipeline.movieList.slice(-20) : [],
+        downloadLinks: payload.contentPipeline.downloadLinks ? payload.contentPipeline.downloadLinks.slice(-10) : [],
+        encodedLinks: payload.contentPipeline.encodedLinks ? payload.contentPipeline.encodedLinks.slice(-30) : [],
         metadata: payload.contentPipeline.metadata || {},
-        sequence: payload.contentPipeline.sequence ? payload.contentPipeline.sequence.slice(0, 50) : []
+        sequence: payload.contentPipeline.sequence ? payload.contentPipeline.sequence.slice(-50) : []
       },
-      screenshots: payload.screenshots.slice(0, 10),
+      screenshots: payload.screenshots.slice(-10),
       recordTabId: payload.recordTabId,
       allowedDomains: payload.allowedDomains || [],
       blockedDomains: payload.blockedDomains || []
     };
-    
+
     try {
       chrome.storage.local.set({ srState: compressed }).catch((e) => {
         if (e.message && e.message.includes('QUOTA_BYTES')) {
@@ -304,8 +328,8 @@ export function persistState() {
             filterMode: payload.filterMode,
             autoSnapshot: payload.autoSnapshot,
             primaryDomain: payload.primaryDomain,
-            actions: payload.actions.slice(0, 20),
-            networkLog: payload.networkLog.slice(0, 20),
+            actions: payload.actions.slice(-20),
+            networkLog: payload.networkLog.slice(-20),
             recordTabId: payload.recordTabId,
             allowedDomains: payload.allowedDomains || [],
             blockedDomains: payload.blockedDomains || []
@@ -345,7 +369,12 @@ export function restoreState(savedState) {
     // collection already does, instead of silently staying empty.
     s.xhrBodies = savedState.xhrBodies || [];
     s.userJourney = savedState.userJourney || [];
-    s.contentPipeline = savedState.contentPipeline || { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };
+    s.contentPipeline = savedState.contentPipeline || { source: '', movieList: [], downloadLinks: [], encodedLinks: [], metadata: {}, sequence: [] };
+    // [FIX] a savedState from before this field existed (an older persisted
+    // session) has a contentPipeline object but no encodedLinks key on it --
+    // the `||` above only covers contentPipeline being entirely absent, not
+    // this field being missing from an otherwise-present one.
+    if (!s.contentPipeline.encodedLinks) s.contentPipeline.encodedLinks = [];
     s.screenshots = savedState.screenshots || [];
     s.recordTabId = savedState.recordTabId || null;
     s.allowedDomains = savedState.allowedDomains || [];
@@ -354,6 +383,41 @@ export function restoreState(savedState) {
     console.warn('Failed to restore state:', e);
   }
 }
+
+// ═══ STATE-READY GATE ═══
+// [FIX] Manifest V3 service workers are ephemeral: Chrome kills this one after
+// ~30s of idle (routine, not an edge case -- a Wecima-style flow full of ad
+// pages, countdowns, and CF challenges blows past that constantly during a
+// single recording session) and the NEXT matching event (very often the very
+// webRequest event that needed to be captured) is what spins a brand-new
+// instance back up, re-running this whole module from scratch with `state`
+// back at its hardcoded defaults (recording: false, networkLog: [], ...).
+// restoreState() was previously only ever invoked from background.js's own
+// top-level async IIFE, AFTER network-capture.js's listeners were already
+// registered and already eligible to fire -- a real race, not a hypothetical
+// one, between that chrome.storage.local.get() resolving and the very
+// webRequest event that woke this worker up being dispatched to a listener
+// that reads `s.recording` before the restore has landed. Exported here so
+// every consumer (network-capture.js above all) can await the SAME promise
+// before touching `state`, instead of each re-implementing its own restore
+// call or, worse, not knowing it needs to.
+export const stateReadyPromise = (async () => {
+  try {
+    const stored = await chrome.storage.local.get(['srState']);
+    if (stored && stored.srState) {
+      restoreState(stored.srState);
+      console.log("Restored recording state from local storage");
+      return;
+    }
+    const session = await chrome.storage.session.get(['srStateBackup']);
+    if (session && session.srStateBackup) {
+      restoreState(session.srStateBackup);
+      console.log("Restored recording state from session backup");
+    }
+  } catch (e) {
+    console.warn('Failed to restore recording state:', e);
+  }
+})();
 
 export function cleanupMemory() {
   try {
@@ -372,6 +436,9 @@ export function cleanupMemory() {
     }
     if (s.userJourney.length > 200) {
       s.userJourney = s.userJourney.slice(-200);
+    }
+    if (s.contentPipeline.encodedLinks && s.contentPipeline.encodedLinks.length > 300) {
+      s.contentPipeline.encodedLinks = s.contentPipeline.encodedLinks.slice(-150);
     }
     persistState();
   } catch (e) {

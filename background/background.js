@@ -1,5 +1,5 @@
 // background.js - Main entry point (orchestrator)
-import { state, restoreState, cleanupMemory, persistState, broadcastRecordingState } from './state.js';
+import { state, cleanupMemory, persistState, broadcastRecordingState, stateReadyPromise } from './state.js';
 import { CONFIG } from './config.js';
 import { initNetworkCapture } from './network-capture.js';
 import { initMessageHandlers } from './message-handlers.js';
@@ -12,23 +12,12 @@ import { CHALLENGE_SOLVING } from './challenge-solver.js';
 console.log("Stream Recorder Pro background ready (modularized)");
 
 // ═══ RESTORE STATE ON LOAD ═══
-(async () => {
-  try {
-    const stored = await chrome.storage.local.get(['srState']);
-    if (stored && stored.srState) {
-      restoreState(stored.srState);
-      console.log("Restored recording state from local storage");
-    } else {
-      const session = await chrome.storage.session.get(['srStateBackup']);
-      if (session && session.srStateBackup) {
-        restoreState(session.srStateBackup);
-        console.log("Restored recording state from session backup");
-      }
-    }
-  } catch (e) {
-    console.warn('Failed to restore recording state:', e);
-  }
-
+// [FIX] the actual restore now happens in state.js's stateReadyPromise --
+// created the instant that module is evaluated, which is BEFORE
+// initNetworkCapture() below registers a single webRequest listener. This
+// block just waits on that same promise to drive the UI badge, instead of
+// independently re-running (and racing) a second copy of the restore logic.
+stateReadyPromise.then(() => {
   // ═══ RESTORE UI BADGE ═══
   // [FIX] this used to be a separate, synchronous block that ran immediately after the async
   // IIFE above was fired off -- NOT after it actually finished. Confirmed directly: that meant
@@ -46,7 +35,7 @@ console.log("Stream Recorder Pro background ready (modularized)");
     chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
     broadcastRecordingState(true);
   }
-})();
+});
 
 // ═══ MEMORY MANAGEMENT ═══
 setInterval(cleanupMemory, CONFIG.AUTO_CLEANUP_INTERVAL);

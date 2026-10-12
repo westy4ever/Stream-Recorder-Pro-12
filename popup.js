@@ -1288,6 +1288,67 @@ document.getElementById('exportFullExtractor').addEventListener('click', () => {
   });
 });
 
+// ═══ IMPORT HTML SNAPSHOTS ═══
+// [NEW] lets Gen Extractor / Gen Resolver / Full Extractor above run from
+// saved HTML page files alone -- no live recording required first. Reads
+// each selected file locally here (FileReader never touches the
+// filesystem from the background side), ships the raw text to the new
+// "importHtmlSnapshots" handler in message-handlers.js, which wraps each
+// one into the same networkLog/xhrBodies shape a live recording produces,
+// then adopts the merged result as currentRecordingData exactly like
+// stopBtn's "getRecordingData" flow does -- so every existing Gen/Export
+// button downstream needs zero changes of its own to consume imported data.
+document.getElementById('importHtmlBtn').addEventListener('click', () => {
+  document.getElementById('importHtmlInput').click();
+});
+
+document.getElementById('importHtmlInput').addEventListener('change', async (e) => {
+  const fileList = Array.from(e.target.files || []);
+  if (fileList.length === 0) return;
+
+  statusDiv.innerText = `⏳ Reading ${fileList.length} file(s)...`;
+  progressFill.style.width = '20%';
+
+  const readAsText = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ filename: file.name, body: reader.result });
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+
+  let files;
+  try {
+    files = await Promise.all(fileList.map(readAsText));
+  } catch (err) {
+    console.error('Stream Recorder Pro: failed to read imported file(s):', err);
+    statusDiv.innerText = '❌ Failed to read file(s). Check console.';
+    progressFill.style.width = '0%';
+    e.target.value = '';
+    return;
+  }
+
+  progressFill.style.width = '60%';
+
+  chrome.runtime.sendMessage({ type: "importHtmlSnapshots", files }, (response) => {
+    progressFill.style.width = '100%';
+    if (response && response.status === 'ok' && response.data) {
+      // [FIX] merges into any existing currentRecordingData (a prior live
+      // recording or an earlier import) instead of overwriting it outright
+      // -- confirmed directly: the background handler already appends to
+      // its own persistent s.networkLog/s.xhrBodies rather than replacing
+      // them, so response.data already IS the full merged set; assigning
+      // it straight through is correct and matches what stopBtn does.
+      currentRecordingData = response.data;
+      jsonPreview.value = JSON.stringify(currentRecordingData, null, 2);
+      statusDiv.innerText = `✅ Imported ${response.added} snapshot(s) (${response.total} total). Ready for Gen Extractor / Full Extractor.`;
+    } else {
+      statusDiv.innerText = '❌ Import failed -- no readable content found in selected file(s).';
+    }
+    setTimeout(() => { progressFill.style.width = '0%'; }, 500);
+    e.target.value = '';
+  });
+});
+
 // ═══ DISCOVER API ENDPOINTS ═══
 document.getElementById('discoverAPI').addEventListener('click', () => {
   if (!currentRecordingData) { 

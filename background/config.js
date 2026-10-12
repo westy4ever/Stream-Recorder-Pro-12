@@ -15,7 +15,14 @@ export const CONFIG = {
 // Site detection patterns
 export const ARABIC_MOVIE_SITES = [
   'wecima.cx', 'wecima.me', 'wecima.click', 'wecima.bid', 'wecima.site', 'wecima.xyz',
-  'mycima.cx', 'mycima.me', 'mycima.xyz'
+  'mycima.cx', 'mycima.me', 'mycima.xyz',
+  // [FIX] arabseed's actual current domain (confirmed live, 2026-10-12) and the mirror/CDN
+  // domain its own pages load images from -- neither was in this list, which only had the
+  // older arabseed.cam/arabseeds.cam domains (still kept below, in STREAMING_SITES/
+  // CONTENT_DOMAINS, in case those come back). Without this, arabseed.living's own API/page
+  // requests never got tagged isArabicApi, even though the site itself is squarely what this
+  // extension is for.
+  'arabseed.living', 'arabseed.men'
 ];
 
 export const SAVEFILES_DOMAINS = [

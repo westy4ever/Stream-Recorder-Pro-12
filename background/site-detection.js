@@ -11,7 +11,11 @@ export const STREAMING_SITES = [
   'faselhd.rip', 'faselhdx.bid',
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
-  'arabseed.cam', 'arabseeds.cam'
+  'arabseed.cam', 'arabseeds.cam',
+  // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
+  // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
+  // case they come back, but arabseed.living is what's actually in use right now.
+  'arabseed.living', 'arabseed.men'
 ];
 
 // ═══ NEW: Ad and spam domains to filter out ═══
@@ -73,6 +77,8 @@ export const CONTENT_DOMAINS = [
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
   'arabseed.cam', 'arabseeds.cam',
+  // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
+  'arabseed.living', 'arabseed.men',
   'yts.lu', 'yify.sc', 'yts.mx',
   'savefiles.com'
 ];

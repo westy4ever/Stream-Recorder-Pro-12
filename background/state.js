@@ -38,6 +38,18 @@ export let state = {
   allowedDomains: [],
   blockedDomains: [],
   recordTabId: null,
+  // [FIX-tabfollow] "Current Tab" mode used to pin capture to the single tabId that was
+  // active the instant the user clicked Start. On ad-heavy Arabic streaming sites the real
+  // video/stream request very often ends up firing in a NEW tab or popup window that the
+  // site opens from that original tab (a "watch now" / ad-gate click), not in the original
+  // tab itself -- every one of those requests was silently dropped by shouldRecordTab()
+  // with no error, producing a clean "Network: 0" for an otherwise normal-looking session.
+  // recordedTabIds holds the growing set of tab ids that currently count as "the tab being
+  // recorded": seeded with recordTabId when recording starts, and grown by background.js's
+  // chrome.tabs.onCreated listener whenever a new tab's openerTabId is already in this set
+  // (so it also follows a popup-of-a-popup, transitively). Left empty / unused in "All
+  // Tabs" mode (recordTabId === null), where shouldRecordTab() already accepts everything.
+  recordedTabIds: [],
   challengeSolving: {}
 };
 
@@ -66,7 +78,7 @@ export function broadcastRecordingState(isRecording) {
 // ═══ DOMAIN HELPERS ═══
 export function registrableDomain(hostname) {
   if (!hostname || hostname === '') return null;
-  
+
   // ═══ FIX: Skip non-web domains ═══
   const lower = hostname.toLowerCase();
   const skipDomains = [
@@ -74,23 +86,23 @@ export function registrableDomain(hostname) {
     'extensions', 'chrome', 'chrome-extension', 'chrome://',
     'about:', 'data:', 'blob:', 'file:'
   ];
-  
+
   // Check if it's a non-web domain
   for (const skip of skipDomains) {
     if (lower.includes(skip)) return null;
   }
-  
+
   // Check if it's an IP address
   if (/^\d+\.\d+\.\d+\.\d+$/.test(lower)) return null;
-  
+
   const parts = hostname.split('.');
-  
+
   // If it's a single word domain (like 'localhost')
   if (parts.length <= 1) return null;
-  
+
   // If it's a two-part domain (like 'egydead.live')
   if (parts.length === 2) return hostname;
-  
+
   // For longer domains, get the last two parts (registrable domain)
   // e.g., 'tv10.egydead.live' → 'egydead.live'
   // but 'sub.domain.co.uk' → 'domain.co.uk' (needs special handling)
@@ -140,7 +152,26 @@ export function shouldRecordUrl(url) {
 export function shouldRecordTab(tabId) {
   const s = state;
   if (s.recordTabId === null) return true;
-  return tabId === s.recordTabId;
+  if (tabId === s.recordTabId) return true;
+  // [FIX-tabfollow] was just the strict match above against the single tab that was active
+  // at Start time. Now also accepts any tab that's been folded into recordedTabIds (a
+  // popup/new tab opened from the recorded tab -- see addRecordedTab() below), so the real
+  // stream request isn't silently dropped when the site opens the player in a new tab.
+  return s.recordedTabIds.includes(tabId);
+}
+
+// [FIX-tabfollow] called from background.js's chrome.tabs.onCreated listener. No-op in
+// "All Tabs" mode (recordTabId === null) since shouldRecordTab() already accepts every tab
+// there and there is nothing to track.
+export function addRecordedTab(tabId) {
+  const s = state;
+  if (s.recordTabId === null) return;
+  if (typeof tabId !== "number") return;
+  if (!s.recordedTabIds.includes(tabId)) {
+    s.recordedTabIds.push(tabId);
+    console.log("[tab-follow] Now also recording tab:", tabId, "(followed set:", s.recordedTabIds, ")");
+    scheduleSave();
+  }
 }
 
 export function passesFilter(resourceType) {
@@ -269,6 +300,9 @@ export function buildPersistPayload() {
       dataUrl: s.dataUrl ? s.dataUrl.substring(0, 100) + '...' : null
     })),
     recordTabId: s.recordTabId,
+    // [FIX-tabfollow] persisted alongside recordTabId so a service-worker restart mid-session
+    // doesn't forget which popup/new tabs have already been folded into the recording scope.
+    recordedTabIds: s.recordedTabIds,
     allowedDomains: s.allowedDomains,
     blockedDomains: s.blockedDomains
   };
@@ -277,7 +311,7 @@ export function buildPersistPayload() {
 export function persistState() {
   try {
     const payload = buildPersistPayload();
-    
+
     try {
       chrome.storage.session.set({ srStateBackup: payload }).catch(() => {});
     } catch (e) {}
@@ -315,6 +349,7 @@ export function persistState() {
       },
       screenshots: payload.screenshots.slice(-10),
       recordTabId: payload.recordTabId,
+      recordedTabIds: payload.recordedTabIds || [],
       allowedDomains: payload.allowedDomains || [],
       blockedDomains: payload.blockedDomains || []
     };
@@ -331,6 +366,7 @@ export function persistState() {
             actions: payload.actions.slice(-20),
             networkLog: payload.networkLog.slice(-20),
             recordTabId: payload.recordTabId,
+            recordedTabIds: payload.recordedTabIds || [],
             allowedDomains: payload.allowedDomains || [],
             blockedDomains: payload.blockedDomains || []
           };
@@ -377,6 +413,10 @@ export function restoreState(savedState) {
     if (!s.contentPipeline.encodedLinks) s.contentPipeline.encodedLinks = [];
     s.screenshots = savedState.screenshots || [];
     s.recordTabId = savedState.recordTabId || null;
+    // [FIX-tabfollow] recordTabId itself is already checked directly by shouldRecordTab(), so
+    // this only needs the EXTRA followed tabs; a savedState from before this field existed
+    // just has none yet, same as a fresh recording before any popup has opened.
+    s.recordedTabIds = savedState.recordedTabIds || [];
     s.allowedDomains = savedState.allowedDomains || [];
     s.blockedDomains = savedState.blockedDomains || [];
   } catch (e) {

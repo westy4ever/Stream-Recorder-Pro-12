@@ -1,5 +1,5 @@
 // background.js - Main entry point (orchestrator)
-import { state, cleanupMemory, persistState, broadcastRecordingState, stateReadyPromise } from './state.js';
+import { state, cleanupMemory, persistState, broadcastRecordingState, stateReadyPromise, addRecordedTab } from './state.js';
 import { CONFIG } from './config.js';
 import { initNetworkCapture } from './network-capture.js';
 import { initMessageHandlers } from './message-handlers.js';
@@ -47,6 +47,28 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     clearTimeout(pendingAutoSnapshotTimers[tabId]);
     delete pendingAutoSnapshotTimers[tabId];
   }
+});
+
+// ═══ TAB-FOLLOW FOR "CURRENT TAB" RECORDING ═══
+// [FIX-tabfollow] "Current Tab" recording used to pin capture to the single tab that was
+// active at Start time (state.recordTabId). On ad-heavy Arabic streaming sites the actual
+// video/stream request very often fires in a NEW tab or popup window the site opens FROM
+// that tab (a "watch now" / ad-gate click), not in the original tab -- every one of those
+// requests was silently dropped by shouldRecordTab(), producing a clean "Network: 0" for an
+// otherwise normal-looking recording session. Whenever a new tab is created with an
+// openerTabId that's already part of the recorded set, fold it into that set too, so
+// chrome.webRequest traffic from it is no longer filtered out. Transitive on purpose (a
+// popup-of-a-popup chain all get followed) since addRecordedTab() grows the same set each
+// new tab is checked against. No-op in "All Tabs" mode or when nothing is recording.
+chrome.tabs.onCreated.addListener(async (tab) => {
+  await stateReadyPromise;
+  if (!state.recording) return;
+  if (state.recordTabId === null) return; // "All Tabs" mode -- nothing to track
+  if (typeof tab.openerTabId !== "number") return;
+  const isFromRecordedTab = tab.openerTabId === state.recordTabId ||
+    state.recordedTabIds.includes(tab.openerTabId);
+  if (!isFromRecordedTab) return;
+  addRecordedTab(tab.id);
 });
 
 // ═══ INITIALIZE ALL MODULES ═══

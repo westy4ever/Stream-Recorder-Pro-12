@@ -2,9 +2,9 @@
 import { state, scheduleSave, persistState, cleanupMemory, broadcastRecordingState, registrableDomain, isSameSite, setPrimaryDomainFromUrl } from './state.js';
 import { CONFIG } from './config.js';
 import { handleCloudflareChallenge, solveManually, CHALLENGE_SOLVING } from './challenge-solver.js';
-import { 
-  isYTSSite, isArabicMovieSite, isSaveFilesSite, 
-  extractYTSTorrents, extractArabicMovieData, extractSaveFilesData, 
+import {
+  isYTSSite, isArabicMovieSite, isSaveFilesSite,
+  extractYTSTorrents, extractArabicMovieData, extractSaveFilesData,
   extractAllYTSPages, buildMagnetLink, isSuspectedBackend,
   isAdDomain, isPopupOrRedirect, isContentDomain, isMediaUrl
 } from './site-detection.js';
@@ -36,7 +36,7 @@ import { generateTests, generateTestReport } from './test-generator.js';
 export function initMessageHandlers() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const s = state;
-    
+
     // ═══ START RECORDING ═══
     if (message.type === "startRecording") {
       s.recording = true;
@@ -52,17 +52,22 @@ export function initMessageHandlers() {
       s.screenshots = [];
       s.contentPipeline = { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };
       s.recordTabId = message.tabId || null;
+      // [FIX-tabfollow] a previous session's followed-tab set (popups the old recording
+      // picked up via addRecordedTab()) must not leak into a brand-new recording -- those
+      // tab ids are unrelated to whatever tab/site this new session is about, and could even
+      // get reused by Chrome for a different, unrelated tab later.
+      s.recordedTabIds = [];
       s.allowedDomains = message.allowedDomains || [];
       s.blockedDomains = message.blockedDomains || [];
-      
+
       if (message.maxBodySize) {
         CONFIG.MAX_BODY_CHARS = Math.max(1000, parseInt(message.maxBodySize, 10) * 1024);
       }
-      
+
       chrome.action.setBadgeText({ text: "REC" });
       chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
       broadcastRecordingState(true);
-      
+
       chrome.windows.getLastFocused({ windowTypes: ['normal'], populate: true }, (win) => {
         const tab = (win && win.tabs || []).find(t => t.active);
         if (tab && tab.url) {
@@ -89,7 +94,7 @@ export function initMessageHandlers() {
       });
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ UPDATE CONFIG ═══
     else if (message.type === "updateConfig") {
       const cfg = message.config || {};
@@ -101,20 +106,20 @@ export function initMessageHandlers() {
       persistState();
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ GET RECORDING STATUS ═══
     else if (message.type === "getRecordingStatus") {
-      sendResponse({ 
-        recording: s.recording, 
-        filterMode: s.filterMode, 
-        autoSnapshot: s.autoSnapshot, 
+      sendResponse({
+        recording: s.recording,
+        filterMode: s.filterMode,
+        autoSnapshot: s.autoSnapshot,
         recordTabId: s.recordTabId,
         allowedDomains: s.allowedDomains,
         blockedDomains: s.blockedDomains,
         maxBodySize: CONFIG.MAX_BODY_CHARS
       });
     }
-    
+
     // ═══ STOP RECORDING ═══
     else if (message.type === "stopRecording") {
       s.recording = false;
@@ -132,16 +137,16 @@ export function initMessageHandlers() {
       sendResponse({ status: "ok" });
       captureSnapshot();
     }
-    
+
     // ═══ GET RECORDING DATA ═══
     else if (message.type === "getRecordingData") {
-      sendResponse({ 
-        data: { 
-          filterMode: s.filterMode, 
-          actions: s.actions, 
-          networkLog: s.networkLog, 
-          xhrBodies: s.xhrBodies, 
-          userJourney: s.userJourney, 
+      sendResponse({
+        data: {
+          filterMode: s.filterMode,
+          actions: s.actions,
+          networkLog: s.networkLog,
+          xhrBodies: s.xhrBodies,
+          userJourney: s.userJourney,
           contentPipeline: s.contentPipeline,
           // [FIX] this used to truncate every screenshot's dataUrl to 100 characters -- since
           // this is the ONLY message type that feeds every export button (JSON/CSV/HAR/MD all
@@ -313,7 +318,7 @@ export function initMessageHandlers() {
       });
       sendResponse({ status: "exporting", format, filename });
     }
-    
+
     // ═══ ACTION ═══
     else if (message.type === "action") {
       if (s.recording) {
@@ -331,16 +336,16 @@ export function initMessageHandlers() {
           data: message.data
         };
         s.actions.push(action);
-        
+
         s.userJourney.push({
           timestamp: Date.now(),
           action: message.actionType,
           url: message.url,
           data: message.data || {}
         });
-        
+
         scheduleSave();
-        
+
         // [FIX] "submit" was missing here. A <form method="post"> submit (e.g. EgyDead's
         // "watch" button, which POSTs and reloads the SAME url with the server list now
         // revealed) never counted as capture-worthy, so this exact, very common reveal pattern
@@ -349,7 +354,7 @@ export function initMessageHandlers() {
         const isCaptureWorthy = message.actionType === "navigate" || message.actionType === "click" || message.actionType === "spa_navigate" || message.actionType === "submit";
         const isSame = isSameSite(message.url);
         console.log("[auto-snapshot] ACTION - isCaptureWorthy:", isCaptureWorthy, "isSameSite:", isSame, "autoSnapshot:", s.autoSnapshot, "sender.frameId:", sender.frameId);
-        
+
         if (s.autoSnapshot && isCaptureWorthy && sender.tab && sender.frameId === 0) {
           const tabId = sender.tab.id;
           if (isSame) {
@@ -369,7 +374,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ ARABIC MOVIES EXTRACTED ═══
     else if (message.type === "arabic_movies_extracted") {
       if (s.recording) {
@@ -384,7 +389,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ SAVEFILES EXTRACTED ═══
     else if (message.type === "savefiles_extracted") {
       if (s.recording) {
@@ -399,7 +404,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ MANUAL SOLVE ═══
     else if (message.type === "manualSolve") {
       const { tabId, url } = message;
@@ -413,7 +418,7 @@ export function initMessageHandlers() {
       });
       sendResponse({ status: "solving" });
     }
-    
+
     // ═══ CHALLENGE DETECTED ═══
     else if (message.type === "challengeDetected") {
       const { challengeType, url } = message;
@@ -432,7 +437,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ SAVE SNAPSHOT ═══
     else if (message.type === "saveSnapshot") {
       captureSnapshot((success) => {
@@ -440,7 +445,7 @@ export function initMessageHandlers() {
       });
       return true;
     }
-    
+
     // ═══ CAPTURE SCREENSHOT ═══
     else if (message.type === "captureScreenshot") {
       const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
@@ -449,7 +454,7 @@ export function initMessageHandlers() {
       });
       return true;
     }
-    
+
     // ═══ XHR RESPONSE BODY ═══
     else if (message.type === "xhrResponseBody") {
       if (s.recording) {
@@ -469,7 +474,7 @@ export function initMessageHandlers() {
           contentType: message.contentType || null
         });
         if (s.xhrBodies.length > CONFIG.MAX_XHR_BODIES) s.xhrBodies.shift();
-        
+
         if (message.streamUrls && message.streamUrls.length > 0) {
           s.userJourney.push({
             timestamp: Date.now(),
@@ -481,7 +486,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ GET STREAM LINKS ═══
     else if (message.type === "getStreamLinks") {
       // [FIX] only special-cased the exact filename "master.txt", missing
@@ -553,33 +558,33 @@ export function initMessageHandlers() {
 
       sendResponse({ links: [...new Set(links)], labeledLinks: [...new Set(labeledLinks)] });
     }
-    
+
     // ═══ PAGE LOADED ═══
     else if (message.type === "pageLoaded") {
       const url = message.url || '';
-      
+
       // Skip ad domains
       if (isAdDomain(url)) {
         console.log("[auto-snapshot] ❌ Skipping ad domain:", url);
         sendResponse({ status: "skipped_ad" });
         return;
       }
-      
+
       if (isPopupOrRedirect(url)) {
         console.log("[auto-snapshot] ❌ Skipping popup/redirect:", url);
         sendResponse({ status: "skipped_popup" });
         return;
       }
-      
+
       if (isMediaUrl(url)) {
         console.log("[auto-snapshot] ❌ Skipping media URL:", url);
         sendResponse({ status: "skipped_media" });
         return;
       }
-      
+
       if (url && !isContentDomain(url) && !isAdDomain(url)) {
         const lower = url.toLowerCase();
-        if (lower.includes('casino') || lower.includes('gambling') || lower.includes('slot') || 
+        if (lower.includes('casino') || lower.includes('gambling') || lower.includes('slot') ||
             lower.includes('bet') || lower.includes('poker') || lower.includes('bingo') ||
             lower.includes('bonus') || lower.includes('deposit') || lower.includes('withdrawal')) {
           console.log("[auto-snapshot] ❌ Skipping gambling/casino site:", url);
@@ -587,7 +592,7 @@ export function initMessageHandlers() {
           return;
         }
       }
-      
+
       // [PATCH 119] this used to call setPrimaryDomainFromUrl() unconditionally on EVERY
       // pageLoaded event, in every tracked tab -- meaning any popup or redirect to an
       // unrelated domain (an ad, a download-prep interstitial, anything) would silently
@@ -605,10 +610,10 @@ export function initMessageHandlers() {
           console.log("[auto-snapshot] No primaryDomain set, URL:", message.url);
         }
       }
-      
+
       const isSame = isSameSite(message.url);
       const shouldSchedule = s.recording && s.autoSnapshot && sender.tab && sender.frameId === 0;
-      
+
       console.log("[auto-snapshot] pageLoaded received:", {
         recording: s.recording,
         autoSnapshot: s.autoSnapshot,
@@ -620,7 +625,7 @@ export function initMessageHandlers() {
         shouldSchedule: shouldSchedule,
         willSchedule: shouldSchedule && isSame
       });
-      
+
       if (shouldSchedule && isSame) {
         const tabId = sender.tab.id;
         console.log("[auto-snapshot] ✅ scheduling from pageLoaded:", message.url);
@@ -644,7 +649,7 @@ export function initMessageHandlers() {
       } else {
         console.log("[auto-snapshot] ❌ NOT scheduling from pageLoaded. shouldSchedule:", shouldSchedule, "isSameSite:", isSame, "recording:", s.recording, "autoSnapshot:", s.autoSnapshot, "hasTab:", !!sender.tab, "frameId:", sender.frameId);
       }
-      
+
       if (s.recording && sender.tab && sender.frameId === 0) {
         const tabId = sender.tab.id;
         const url = message.url;
@@ -660,7 +665,7 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ EXTRACT YTS DATA ═══
     else if (message.type === "extractYTSData") {
       const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
@@ -699,7 +704,7 @@ export function initMessageHandlers() {
         sendResponse({ success: false });
       }
     }
-    
+
     // ═══ EXTRACT ARABIC MOVIES ═══
     else if (message.type === "extractArabicMovies") {
       const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
@@ -724,7 +729,7 @@ export function initMessageHandlers() {
         sendResponse({ success: false });
       }
     }
-    
+
     // ═══ EXTRACT SAVEFILES ═══
     else if (message.type === "extractSaveFiles") {
       const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
@@ -749,7 +754,7 @@ export function initMessageHandlers() {
         sendResponse({ success: false });
       }
     }
-    
+
     // ═══ SPA NAVIGATE ═══
     else if (message.type === "spa_navigate") {
       if (s.recording) {
@@ -760,7 +765,7 @@ export function initMessageHandlers() {
           selector: message.selector || 'SPA_detected',
           pageState: message.pageState || {}
         });
-        
+
         s.userJourney.push({
           timestamp: Date.now(),
           action: 'spa_navigate',
@@ -777,7 +782,7 @@ export function initMessageHandlers() {
           primaryDomain: s.primaryDomain,
           willSchedule: s.autoSnapshot && sender.tab && isSame
         });
-        
+
         if (s.autoSnapshot && sender.tab) {
           const tabId = sender.tab.id;
           if (isSame) {
@@ -790,31 +795,31 @@ export function initMessageHandlers() {
       }
       sendResponse({ status: "ok" });
     }
-    
+
     // ═══ GET TORRENT LINKS ═══
     else if (message.type === "getTorrentLinks") {
       sendResponse({ data: getTorrentLinks() });
     }
-    
+
     // ═══ GET TORRENT LINKS FILTERED ═══
     else if (message.type === "getTorrentLinksFiltered") {
       const all = getTorrentLinks();
       const filtered = message.hideTMDB ? all.filter(r => !/api\.themoviedb\.org/.test(r.apiEndpoint || '')) : all;
       sendResponse({ data: filtered });
     }
-    
+
     // ═══ GET CONTENT PIPELINE ═══
     else if (message.type === "getContentPipeline") {
       sendResponse({ data: s.contentPipeline });
     }
-    
+
     // ═══ BUILD MAGNET ═══
     else if (message.type === "buildMagnet") {
       const { infoHash, title, trackers } = message;
       const magnet = buildMagnetLink(infoHash, title, trackers);
       sendResponse({ magnet });
     }
-    
+
     // ═══ GET YTS API VERSION ═══
     else if (message.type === "getYTSApiVersion") {
       const tabId = message.tabId || (sender.tab ? sender.tab.id : null);
@@ -832,7 +837,7 @@ export function initMessageHandlers() {
         sendResponse({ version: 'v2' });
       }
     }
-    
+
     // ═══ GET SCREENSHOTS ═══
     else if (message.type === "getScreenshots") {
       // [FIX] same truncation bug as getRecordingData above, same fix -- a message type
@@ -840,7 +845,7 @@ export function initMessageHandlers() {
       // was the more surprising half of this bug, if anything.
       sendResponse({ screenshots: s.screenshots });
     }
-    
+
     // ═══ COPY AS PYTHON ═══
     else if (message.type === "copyAsPython") {
       const url = message.url || '';
@@ -855,7 +860,7 @@ export function initMessageHandlers() {
         '    magnet = self._build_magnet(info_hash, title, file_idx)\n';
       sendResponse({ snippet });
     }
-    
+
     // ═══ AUTO SNAPSHOT TOGGLED ═══
     else if (message.type === "autoSnapshotToggled") {
       s.autoSnapshot = message.enabled;
@@ -868,8 +873,8 @@ export function initMessageHandlers() {
     else if (message.type === "generatePythonExtractor") {
       const siteName = message.siteName || 'CustomSite';
       const code = generatePythonExtractor(siteName, message.data);
-      sendResponse({ 
-        status: "ok", 
+      sendResponse({
+        status: "ok",
         code: code,
         filename: `${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_extractor.py`
       });
@@ -879,8 +884,8 @@ export function initMessageHandlers() {
     else if (message.type === "generateResolver") {
       const host = message.host;
       const code = generateResolverCode(host, message.data);
-      sendResponse({ 
-        status: "ok", 
+      sendResponse({
+        status: "ok",
         code: code,
         filename: `resolve_${host.replace(/[^a-zA-Z0-9]/g, '_')}.py`
       });
@@ -890,8 +895,8 @@ export function initMessageHandlers() {
     else if (message.type === "generateCompleteExtractor") {
       const siteName = message.siteName || 'CustomSite';
       const result = generateCompleteExtractor(siteName, message.data);
-      sendResponse({ 
-        status: "ok", 
+      sendResponse({
+        status: "ok",
         ...result
       });
     }
@@ -899,27 +904,27 @@ export function initMessageHandlers() {
     // ═══ FEATURE 4: DISCOVER API ENDPOINTS ═══
     else if (message.type === "discoverAPIEndpoints") {
       const endpoints = discoverAPIEndpoints();
-      sendResponse({ 
-        status: "ok", 
-        endpoints: endpoints 
+      sendResponse({
+        status: "ok",
+        endpoints: endpoints
       });
     }
 
     // ═══ FEATURE 5: DISCOVER STREAM RESOLVERS ═══
     else if (message.type === "discoverStreamResolvers") {
       const resolvers = discoverStreamResolvers();
-      sendResponse({ 
-        status: "ok", 
-        resolvers: resolvers 
+      sendResponse({
+        status: "ok",
+        resolvers: resolvers
       });
     }
 
     // ═══ FEATURE 6: DISCOVER SITE STRUCTURE ═══
     else if (message.type === "discoverSiteStructure") {
       const structure = discoverSiteStructure();
-      sendResponse({ 
-        status: "ok", 
-        structure: structure 
+      sendResponse({
+        status: "ok",
+        structure: structure
       });
     }
 
@@ -927,8 +932,8 @@ export function initMessageHandlers() {
     else if (message.type === "findRequestChanges") {
       const diffs = findRequestChanges();
       const report = generateDiffReport();
-      sendResponse({ 
-        status: "ok", 
+      sendResponse({
+        status: "ok",
         diffs: diffs,
         report: report
       });
@@ -937,9 +942,9 @@ export function initMessageHandlers() {
     // ═══ FEATURE 8: ANALYZE MAGNET LINKS ═══
     else if (message.type === "analyzeMagnetLinks") {
       const magnets = analyzeMagnetLinks();
-      sendResponse({ 
-        status: "ok", 
-        magnets: magnets 
+      sendResponse({
+        status: "ok",
+        magnets: magnets
       });
     }
 
@@ -947,9 +952,9 @@ export function initMessageHandlers() {
     else if (message.type === "generateTorrentMetadata") {
       const { magnetLink } = message;
       const metadata = generateTorrentMetadata(magnetLink);
-      sendResponse({ 
-        status: "ok", 
-        metadata: metadata 
+      sendResponse({
+        status: "ok",
+        metadata: metadata
       });
     }
 
@@ -957,8 +962,8 @@ export function initMessageHandlers() {
     else if (message.type === "mapSPARoutes") {
       const routes = mapSPARoutes();
       const structure = generateSPAStructure();
-      sendResponse({ 
-        status: "ok", 
+      sendResponse({
+        status: "ok",
         routes: routes,
         structure: structure
       });
@@ -985,9 +990,9 @@ export function initMessageHandlers() {
     // ═══ FEATURE 13: DISCOVER QUALITY VARIANTS ═══
     else if (message.type === "discoverQualityVariants") {
       const qualities = discoverQualityVariants();
-      sendResponse({ 
-        status: "ok", 
-        qualities: qualities 
+      sendResponse({
+        status: "ok",
+        qualities: qualities
       });
     }
 
@@ -1007,8 +1012,8 @@ export function initMessageHandlers() {
         const analysis = await analyzeHLSPlaylist(url, content);
         const report = generateQualityReport(analysis);
         const bestQuality = findBestQuality(analysis);
-        sendResponse({ 
-          status: "ok", 
+        sendResponse({
+          status: "ok",
           analysis: analysis,
           report: report,
           bestQuality: bestQuality
@@ -1024,8 +1029,8 @@ export function initMessageHandlers() {
       (async () => {
         const analysis = await analyzeHLSPlaylist(url, content);
         const bestQuality = findBestQuality(analysis);
-        sendResponse({ 
-          status: "ok", 
+        sendResponse({
+          status: "ok",
           bestQuality: bestQuality,
           analysis: analysis
         });
@@ -1135,7 +1140,7 @@ export function initMessageHandlers() {
       const report = generateTestReport();
       sendResponse({ status: "ok", code: code, report: report, filename: `test_${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}.py` });
     }
-    
+
     else {
       sendResponse({ status: "unknown" });
     }

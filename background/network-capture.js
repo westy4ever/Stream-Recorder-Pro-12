@@ -23,16 +23,10 @@ export function initNetworkCapture() {
       // the ones that matter.
       await stateReadyPromise;
       const s = state;
-      // [DIAG-temp] Logs every single webRequest event onBeforeRequest actually sees, and which
-      // gate (if any) rejected it, so we can tell apart "webRequest isn't firing for these
-      // requests at all" from "it's firing but one of these three checks is dropping it" --
-      // remove once the Network:0-on-iframe-embeds issue is root-caused.
-      const diagTag = `[diag-webrequest] ${details.method} ${details.type} tab=${details.tabId} frame=${details.frameId} ${details.url}`;
-      if (!s.recording) { console.log(diagTag, "-> DROPPED: not recording"); return; }
-      if (!passesFilter(details.type)) { console.log(diagTag, "-> DROPPED: filterMode", s.filterMode); return; }
-      if (!shouldRecordUrl(details.url)) { console.log(diagTag, "-> DROPPED: shouldRecordUrl (allowed/blockedDomains)", s.allowedDomains, s.blockedDomains); return; }
-      if (!shouldRecordTab(details.tabId)) { console.log(diagTag, "-> DROPPED: shouldRecordTab recordTabId=", s.recordTabId, "recordedTabIds=", s.recordedTabIds); return; }
-      console.log(diagTag, "-> CAPTURED");
+      if (!s.recording) return;
+      if (!passesFilter(details.type)) return;
+      if (!shouldRecordUrl(details.url)) return;
+      if (!shouldRecordTab(details.tabId)) return;
 
       const isYTSApi = YTS_API_PATTERNS.some(pattern => pattern.test(details.url));
       const isArabicApi = ARABIC_API_PATTERNS.some(pattern => pattern.test(details.url));

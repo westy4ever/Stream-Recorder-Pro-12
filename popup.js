@@ -136,8 +136,27 @@ startBtn.onclick = () => {
   };
 
   if (useCurrentTabOnly) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      startWith(tabs && tabs[0] ? tabs[0].id : null);
+    // [FIX-popupwindow] was chrome.tabs.query({ active: true, currentWindow: true }) --
+    // `currentWindow` resolves to whatever window THIS SCRIPT is running in. Every other
+    // button in this file that needs "the site tab" (solveBtn, extractYTSTorrentsBtn,
+    // extractArabicMoviesBtn, extractSaveFilesBtn) already avoids this by querying
+    // getLastFocused with windowTypes: ["normal"] -- but this one didn't, and it's the one
+    // that actually sets recordTabId for the whole recording session. Confirmed directly via
+    // diagnostic logging: when the popup is detached into its own window (the "pop out"
+    // button right above specifically supports this, exactly so the recorder can stay open
+    // while browsing), clicking Start Recording from inside that detached popup window makes
+    // `currentWindow` resolve to the POPUP's own window -- so tabs[0] came back as popup.html
+    // itself (confirmed: tabId 70605048, popup.html's own tab) instead of the actual site tab
+    // (70605004) in the real browser window. shouldRecordTab() then silently rejected every
+    // single real network request for the whole session with no error at all -- a clean
+    // "Actions: 16, Network: 0" that looked exactly like a filtering bug, but had nothing to
+    // do with filterMode, allowedDomains, or the recordedTabIds tab-follow logic investigated
+    // earlier. windowTypes: ["normal"] excludes popup/devtools windows, so this always finds
+    // the real browser window's active tab regardless of whether the popup is docked or
+    // popped out.
+    chrome.windows.getLastFocused({ windowTypes: ["normal"], populate: true }, (win) => {
+      const tab = (win && win.tabs || []).find(t => t.active);
+      startWith(tab ? tab.id : null);
     });
   } else {
     startWith(null);

@@ -40,7 +40,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://*.adsco.re/*",
+      "urlFilter": "*://pagead2.googlesyndication.com/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -49,7 +49,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://pagead2.googlesyndication.com/*",
+      "urlFilter": "*://imasdk.googleapis.com/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -58,7 +58,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://imasdk.googleapis.com/*",
+      "urlFilter": "*://securepubads.g.doubleclick.net/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -67,7 +67,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://securepubads.g.doubleclick.net/*",
+      "urlFilter": "*://*.mc.yandex.ru/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -76,7 +76,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://*.c.adsco.re/*",
+      "urlFilter": "*://*.yandex.ru/ads/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -85,7 +85,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://*.4.adsco.re/*",
+      "urlFilter": "*://*.yandex.ru/adfox/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -94,7 +94,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://*.6.adsco.re/*",
+      "urlFilter": "*://*.yandex.ru/partner/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   },
@@ -103,97 +103,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "*://*.rdtds.net/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 13,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.hai8g.com/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 14,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.mc.yandex.ru/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 15,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.yandex.ru/ads/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 16,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.yandex.ru/adfox/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 17,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.yandex.ru/partner/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 18,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
       "urlFilter": "*://*.yandex.ru/metrica/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 19,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.recaptcha.net/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 20,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.agl006.host/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 21,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.xbeat.space/*",
-      "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
-    }
-  },
-  {
-    "id": 22,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
-      "urlFilter": "*://*.traincdn.com/*",
       "resourceTypes": ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]
     }
   }

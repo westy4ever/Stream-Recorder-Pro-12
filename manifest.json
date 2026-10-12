@@ -5,12 +5,17 @@
   "minimum_chrome_version": "111",
   "description": "Reverse engineer streaming sites - capture APIs, streams, and generate Python extractors for Enigma2",
   "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
-  "permissions": ["storage", "unlimitedStorage", "downloads", "webRequest", "scripting", "alarms"],
+  "permissions": ["storage", "unlimitedStorage", "downloads", "webRequest", "scripting", "alarms", "declarativeNetRequest"],
   "host_permissions": ["<all_urls>"],
   "web_accessible_resources": [{
     "resources": ["websocket-hook.js"],
     "matches": ["<all_urls>"]
   }],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "ruleset_1", "enabled": true, "path": "rules.json" }
+    ]
+  },
   "background": { "service_worker": "background/background.js", "type": "module" },
   "action": {
     "default_popup": "popup.html",

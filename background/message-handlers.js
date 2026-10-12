@@ -556,7 +556,23 @@ export function initMessageHandlers() {
         .map((entry) => entry.url);
 
       // [FIX] same missing .txt-extension issue as urlPattern above, same fix.
-      const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
+      // [FIX-adjunk] the old pattern had no "must have a real path" requirement,
+      // so a bare host whose TLD coincidentally spells a media extension (confirmed
+      // directly: "https://pool.ts" — .ts is a real ccTLD, not a transport-stream
+      // segment here) matched just as happily as a genuine stream URL. Requiring
+      // a literal "/" between the host and the final, extension-bearing segment
+      // excludes that whole bare-domain false-positive class while still matching
+      // every real stream/manifest URL, which always has a path.
+      const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\/[^\s"'<>\\]*?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
+      // [FIX-adjunk] ad/analytics bundles (prebid.js and friends, commonly vendored
+      // from a generic CDN like cdn.jsdelivr.net -- that CDN itself is NOT ad-related
+      // and isn't blocked) ship their own creative/test URLs inline in the response
+      // body, e.g. an S3 bucket literally named "files.prebid.org" (S3's path-style
+      // bucket naming, not a real hostname) serving "PrebidLogo.mp4" -- confirmed
+      // directly from a real capture. isAdDomain() catches a known ad host; the
+      // "prebid" substring check catches this S3-path-style case that isAdDomain's
+      // hostname-only check can't see (the giveaway is in the path, not the host).
+      const isAdOrJunkUrl = (u) => isAdDomain(u) || /prebid/i.test(u);
       const rawMatches = [];
       for (const entry of s.xhrBodies) {
         if (!entry.body) continue;
@@ -571,6 +587,7 @@ export function initMessageHandlers() {
         for (const m of matches) {
           const cleaned = m.replace(/\\\//g, '/');
           if (isSegmentUrl(cleaned)) continue;
+          if (isAdOrJunkUrl(cleaned)) continue;
           links.push(cleaned);
           rawMatches.push({ url: cleaned, label: sourceLabel });
         }

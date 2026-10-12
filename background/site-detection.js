@@ -64,7 +64,11 @@ export const AD_DOMAINS = [
   'scorecardresearch.com',
   'moatads.com',
   'addthis.com',
-  'sharethis.com'
+  'sharethis.com',
+  // [FIX-adjunk] confirmed directly: an ad/analytics bundle's response body
+  // referenced this host as a junk "stream candidate" (see bodyUrlPattern in
+  // message-handlers.js) -- not an actual video source.
+  'm4ow.uk'
 ];
 
 // ═══ NEW: Content domains that should trigger snapshots ═══

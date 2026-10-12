@@ -1,6 +1,6 @@
 // export-generator.js - Generate PERFECT Python extractor code
 import { state } from './state.js';
-import { isArabicMovieSite, isYTSSite, isSaveFilesSite } from './site-detection.js';
+import { isArabicMovieSite, isYTSSite, isSaveFilesSite, isAdDomain } from './site-detection.js';
 
 // [FIX] captured category titles and URLs were embedded into generated Python source as
 // plain "..." string literals -- title got a partial escape (double-quotes only, no
@@ -1131,12 +1131,20 @@ function mapSPARoutesFromCapturedData(actions) {
 const urlPattern = /\.(m3u8|mp4|ts|txt)(\?|$)|\/hls\d?\//i;
 const contentTypePattern = /video\/|mpegurl|application\/x-mpegurl/i;
 const isSegmentUrl = (u) => /\/seg-\d+-/i.test(u);
-const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
+// [FIX-adjunk] same fix as message-handlers.js's getStreamLinks: require a
+// real path (not just a bare host whose TLD happens to spell a media
+// extension, e.g. "https://pool.ts" -- .ts is a real ccTLD) before this
+// counts as a candidate stream URL, and skip known ad/analytics hosts plus
+// the S3-path-style "files.prebid.org" bucket-name trick. This feeds
+// generated resolver code, so a false positive here is worse than noise --
+// it produces a bogus resolver stub for an ad domain.
+const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\/[^\s"'<>\\]*?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
+const isAdOrJunkUrl = (u) => isAdDomain(u) || /prebid/i.test(u);
 
 function discoverStreamResolversFromCapturedData(networkLog, xhrBodies) {
   const streamUrls = [];
   for (const entry of networkLog) {
-    if (!entry.url || isSegmentUrl(entry.url)) continue;
+    if (!entry.url || isSegmentUrl(entry.url) || isAdOrJunkUrl(entry.url)) continue;
     const ct = entry.responseHeaders && (entry.responseHeaders['content-type'] || entry.responseHeaders['Content-Type']);
     const matches = urlPattern.test(entry.url) || (ct && contentTypePattern.test(ct));
     if (matches) {
@@ -1153,7 +1161,7 @@ function discoverStreamResolversFromCapturedData(networkLog, xhrBodies) {
     const matches = body.body.match(bodyUrlPattern) || [];
     for (const rawUrl of matches) {
       const url = rawUrl.replace(/\\\//g, '/');
-      if (isSegmentUrl(url)) continue;
+      if (isSegmentUrl(url) || isAdOrJunkUrl(url)) continue;
       streamUrls.push({
         url: url,
         referer: body.url || '',

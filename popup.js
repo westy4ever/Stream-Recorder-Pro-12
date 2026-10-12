@@ -516,7 +516,18 @@ function doExport(format) {
     
     // [FIX] now uses the shared, fixed downloadBlob() (see its own comment)
     // instead of this duplicated, premature-revoke pattern.
-    downloadBlob(content, filename, mimeType, true).then((result) => {
+    // [FIX-saveas] was saveAs: true -- every one of this file's saveAs:true call sites
+    // (this one plus genExtractor/genResolver/exportFullExtractor/generateTests below) pops a
+    // native "Save As" dialog per download. Chrome can only show/honor ONE such dialog at a
+    // time; firing several saveAs:true downloads back-to-back (exactly what happens exporting
+    // right after Stop, or generating an extractor + its test file together) makes every
+    // dialog after the first get silently auto-resolved with a RANDOM filename instead of the
+    // one actually requested -- confirmed directly from real downloads: *_extractor.py came
+    // out as a random UUID with a .pyw extension instead of the real name. saveAs: false
+    // (the doSplitExport export path's default, which never had this problem) saves straight
+    // to the Downloads folder using the exact suggested filename every time, no dialog, no
+    // race between simultaneous downloads.
+    downloadBlob(content, filename, mimeType, false).then((result) => {
       clearInterval(interval);
       progressFill.style.width = "100%";
       if (!result.ok) {
@@ -1255,7 +1266,9 @@ document.getElementById('genExtractor').addEventListener('click', () => {
       const filename = `${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_extractor.py`;
       // [FIX] uses the shared, fixed downloadBlob() instead of the
       // duplicated, premature-revoke pattern (see its own comment).
-      downloadBlob(response.code, filename, 'text/x-python', true);
+      // [FIX-saveas] was saveAs: true -- see the detailed [FIX-saveas] comment near
+      // doExport()'s downloadBlob call (~line 530) for why this caused random filenames.
+      downloadBlob(response.code, filename, 'text/x-python', false);
       
       statusDiv.innerText = `✅ Python extractor saved as ${filename}`;
     } else {
@@ -1292,7 +1305,9 @@ document.getElementById('genResolver').addEventListener('click', () => {
       const filename = `resolve_${safeHost}.py`;
       // [FIX] uses the shared, fixed downloadBlob() instead of the
       // duplicated, premature-revoke pattern (see its own comment).
-      downloadBlob(response.code, filename, 'text/x-python', true);
+      // [FIX-saveas] was saveAs: true -- see the detailed [FIX-saveas] comment near
+      // doExport()'s downloadBlob call (~line 530) for why this caused random filenames.
+      downloadBlob(response.code, filename, 'text/x-python', false);
       
       statusDiv.innerText = `✅ Resolver saved as ${filename}`;
     } else {
@@ -1328,7 +1343,12 @@ document.getElementById('exportFullExtractor').addEventListener('click', () => {
       const filename = `${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_extractor.py`;
       // [FIX] uses the shared, fixed downloadBlob() instead of the
       // duplicated, premature-revoke pattern (see its own comment).
-      downloadBlob(response.content, filename, 'text/x-python', true);
+      // [FIX-saveas] was saveAs: true -- this call site AND the companion test-file
+      // download right below it used to both fire saveAs:true back-to-back, which is
+      // exactly the dialog-stacking case from the [FIX-saveas] comment near doExport()'s
+      // downloadBlob call (~line 530): with two native Save-As dialogs queued, the second
+      // one got silently auto-resolved with a random filename. saveAs:false here too.
+      downloadBlob(response.content, filename, 'text/x-python', false);
 
       // [NEW] confirmed directly: the generator now also produces a
       // real, runnable companion test file (test-generator.js, already
@@ -1337,7 +1357,7 @@ document.getElementById('exportFullExtractor').addEventListener('click', () => {
       // when present, same as the main file.
       let testNote = '';
       if (response.testCode && response.testFilename) {
-        downloadBlob(response.testCode, response.testFilename, 'text/x-python', true);
+        downloadBlob(response.testCode, response.testFilename, 'text/x-python', false);
         testNote = ` + ${response.testFilename}`;
       }
       
@@ -1891,7 +1911,9 @@ document.getElementById('generateTests').addEventListener('click', () => {
       const filename = `test_${siteName.toLowerCase().replace(/[^a-z0-9]/g, '_')}.py`;
       // [FIX] uses the shared, fixed downloadBlob() instead of the
       // duplicated, premature-revoke pattern (see its own comment).
-      downloadBlob(response.code, filename, 'text/x-python', true);
+      // [FIX-saveas] was saveAs: true -- see the detailed [FIX-saveas] comment near
+      // doExport()'s downloadBlob call (~line 530) for why this caused random filenames.
+      downloadBlob(response.code, filename, 'text/x-python', false);
       
       statusDiv.innerText = `✅ Tests saved as ${filename}`;
     } else {

@@ -30,25 +30,81 @@ const torrentResultsDiv = document.getElementById("torrentResults");
 const optionsLink = document.getElementById("optionsLink");
 const popOutBtn = document.getElementById("popOutBtn");
 const detachedHint = document.getElementById("detachedHint");
+const minimizeBtn = document.getElementById("minimizeBtn");
 const recBadge = document.getElementById("recBadge");
 
 // Popout window support
+// [FIX-popoutplacement] Chrome/Brave's download-complete notification renders in the toolbar
+// area (top-right, near the extensions icons), and chrome.windows.create() with no left/top
+// given just lets the browser pick wherever it feels like -- which in practice often lands
+// the detached window right where that notification shows up, covering it (or getting covered
+// by it) every time a snapshot auto-saves. Two things fix this: (1) default to opening in the
+// top-left corner instead, well clear of that area, and (2) remember wherever the user
+// actually drags/resizes it to afterward (via chrome.windows.onBoundsChanged, saved to
+// chrome.storage.local), so once they've found a good spot it reopens there every time instead
+// of snapping back to the default.
+const POPOUT_BOUNDS_KEY = "popoutBounds";
+const DEFAULT_POPOUT_BOUNDS = { left: 20, top: 20, width: 500, height: 820 };
+
 chrome.windows.getCurrent((win) => {
   if (win.type === "popup") {
     popOutBtn.style.display = "none";
     detachedHint.style.display = "block";
+    // [FIX-minimize] Chrome strips the normal window chrome (menu/tabs/address bar) from a
+    // popup-type window but still gives it minimize/maximize/close controls on most
+    // platforms -- however those can be easy to miss or absent depending on OS theme, and the
+    // user asked for an explicit, reliable way to get this out of the way of the screen
+    // without closing it (losing the in-progress recording UI). chrome.windows.update's
+    // "minimized" state works on popup-type windows exactly like normal ones; restoring is
+    // native OS behavior afterward (taskbar entry on Windows/Linux, Dock on macOS), same as
+    // any other minimized window -- nothing more for this extension to do there.
+    minimizeBtn.style.display = "inline-block";
+
+    // Debounced save of this window's current position/size, any time the user moves or
+    // resizes it -- at most once per 500ms, so dragging doesn't spam chrome.storage.local.
+    let saveTimeout = null;
+    const saveBounds = () => {
+      chrome.windows.get(win.id, (current) => {
+        if (chrome.runtime.lastError || !current) return;
+        chrome.storage.local.set({
+          [POPOUT_BOUNDS_KEY]: {
+            left: current.left, top: current.top,
+            width: current.width, height: current.height
+          }
+        });
+      });
+    };
+    if (chrome.windows.onBoundsChanged) {
+      chrome.windows.onBoundsChanged.addListener((changedWin) => {
+        if (changedWin.id !== win.id) return;
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(saveBounds, 500);
+      });
+    }
   }
 });
 
-popOutBtn.onclick = () => {
-  chrome.windows.create({
-    url: chrome.runtime.getURL("popup.html"),
-    type: "popup",
-    width: 500,
-    height: 820,
-    focused: true
+minimizeBtn.onclick = () => {
+  chrome.windows.getCurrent((win) => {
+    chrome.windows.update(win.id, { state: "minimized" });
   });
-  window.close();
+};
+
+popOutBtn.onclick = () => {
+  chrome.storage.local.get([POPOUT_BOUNDS_KEY], (result) => {
+    const saved = result[POPOUT_BOUNDS_KEY];
+    const bounds = (saved && typeof saved.left === "number") ? saved : DEFAULT_POPOUT_BOUNDS;
+    chrome.windows.create({
+      url: chrome.runtime.getURL("popup.html"),
+      type: "popup",
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      focused: true
+    });
+    window.close();
+  });
 };
 
 // Load saved preferences

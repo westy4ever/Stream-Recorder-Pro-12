@@ -277,14 +277,28 @@ export function buildPersistPayload() {
     // elsewhere this session (the page-hook.js/websocket-hook.js race
     // condition) -- fixing the race alone does not help if a restart
     // during the session still discards everything captured so far.
-    // Each body is truncated before persisting, matching the same
-    // 2000-char treatment networkLog's own bodies already get just
-    // below, since a single xhr body can be far larger in memory (up
-    // to MAX_BODY_CHARS, confirmed up to 500000 chars in page-hook.js)
-    // than is reasonable to write to chrome.storage repeatedly.
+    // [FIX] was re-truncating every body down to 2000 chars here, on
+    // top of whatever cap page-hook.js already applied live (confirmed
+    // up to MAX_BODY_CHARS -- 100000 by default, user-configurable up
+    // to 1024000 via options.html). That silently threw away most of a
+    // real captured API response on every service-worker restart --
+    // confirmed directly, 2026-10-13: a real n1mwq.org /embed/playback
+    // JSON response (a few KB, well under the live cap) came back cut
+    // off mid-object in a downloaded recording, specifically because
+    // a restart had round-tripped it through this 2000-char persist
+    // cap before the download happened, forcing a manual re-capture
+    // from DevTools instead of the recording just having it. The
+    // extension already declares "unlimitedStorage" in its manifest
+    // (chrome.storage.local has no meaningful quota under it), and
+    // persistState() below still has a QUOTA_BYTES fallback to a
+    // smaller "minimal" state if storage ever does fail -- so there's
+    // no real budget reason to truncate harder than the live capture
+    // already does. Capping at CONFIG.MAX_BODY_CHARS instead keeps
+    // "what got captured" and "what survives a restart" the same
+    // size, whatever the user has that set to.
     xhrBodies: s.xhrBodies.slice(-CONFIG.MAX_XHR_BODIES_SIZE).map(x => ({
       ...x,
-      body: x.body ? x.body.substring(0, 2000) : x.body
+      body: x.body ? x.body.substring(0, CONFIG.MAX_BODY_CHARS) : x.body
     })),
     userJourney: s.userJourney.slice(-100),
     contentPipeline: {

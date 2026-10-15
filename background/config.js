@@ -6,6 +6,16 @@ export const CONFIG = {
   MAX_PERSISTED_NETWORK_ENTRIES: 200,
   MAX_PERSISTED_ACTION_ENTRIES: 200,
   MAX_XHR_BODIES: 200,
+  // [NEW] script-body capture (see background/script-capture.js): webRequest never exposes
+  // response bodies for ANY resource type, including scripts -- xhrBodies only exists because
+  // page-hook.js separately wraps fetch()/XMLHttpRequest in the page itself and messages the
+  // body back. A plain <script src="..."> load isn't fetch/XHR, so it was never caught either
+  // way -- the site's own app bundle (where a decrypt/signing routine like vidnest.fun's or
+  // moviesapi.to's actually lives) just didn't show up anywhere in a recording, full stop.
+  // Capped independently from xhrBodies: a modern SPA can load 20-60+ script chunks per page
+  // (confirmed directly in real captures -- vidcore.io alone loaded 11 in one page load), most
+  // of them small webpack/CSS-module shims, not worth an unbounded cap.
+  MAX_SCRIPT_BODIES: 60,
   MAX_RETRIES: 3,
   MAX_SCREENSHOTS: 20,
   AUTO_CLEANUP_INTERVAL: 60000,

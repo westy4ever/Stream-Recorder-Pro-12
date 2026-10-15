@@ -3,6 +3,7 @@ import { state, shouldRecordUrl, shouldRecordTab, passesFilter, safeBodyToString
 import { CONFIG, YTS_API_PATTERNS, ARABIC_API_PATTERNS, CLOUDFLARE_CHALLENGE_HEADERS, CLOUDFLARE_CHALLENGE_STATUSES } from './config.js';
 import { isSuspectedBackend, isDownloadUrl } from './site-detection.js';
 import { handleCloudflareChallenge } from './challenge-solver.js';
+import { captureScriptBody } from './script-capture.js';
 
 export function initNetworkCapture() {
   // ═══ onBeforeRequest ═══
@@ -179,6 +180,14 @@ export function initNetworkCapture() {
       }
       s.networkLog.push(entry);
       scheduleSave();
+
+      // [NEW] see script-capture.js for the full rationale. Deliberately NOT awaited --
+      // this is a secondary, best-effort re-fetch of the script body from the background,
+      // and the webRequest onCompleted listener itself must not be blocked on it (other
+      // requests' onCompleted events need to keep flowing immediately).
+      if (entry.type === "script") {
+        captureScriptBody(entry);
+      }
     },
     { urls: ["<all_urls>"] },
     ["responseHeaders"]

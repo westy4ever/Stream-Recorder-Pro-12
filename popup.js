@@ -257,6 +257,7 @@ const exportScopeSelect = document.getElementById("exportScope");
 const EXPORT_SECTIONS = [
   { key: 'networkLog', label: 'networkLog' },
   { key: 'xhrBodies', label: 'xhrBodies' },
+  { key: 'scriptBodies', label: 'scriptBodies' },
   { key: 'actions', label: 'actions' },
   { key: 'userJourney', label: 'userJourney' },
   { key: 'contentPipeline', label: 'contentPipeline' },

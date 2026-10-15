@@ -48,6 +48,7 @@ export function initMessageHandlers() {
       s.networkLog = [];
       s.pending = {};
       s.xhrBodies = [];
+      s.scriptBodies = [];
       s.userJourney = [];
       s.screenshots = [];
       s.contentPipeline = { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };
@@ -146,6 +147,7 @@ export function initMessageHandlers() {
           actions: s.actions,
           networkLog: s.networkLog,
           xhrBodies: s.xhrBodies,
+          scriptBodies: s.scriptBodies,
           userJourney: s.userJourney,
           contentPipeline: s.contentPipeline,
           // [FIX] this used to truncate every screenshot's dataUrl to 100 characters -- since
@@ -260,6 +262,7 @@ export function initMessageHandlers() {
           actions: s.actions,
           networkLog: s.networkLog,
           xhrBodies: s.xhrBodies,
+          scriptBodies: s.scriptBodies,
           userJourney: s.userJourney,
           contentPipeline: s.contentPipeline
         }
@@ -269,7 +272,7 @@ export function initMessageHandlers() {
 
     // ═══ EXPORT ═══
     else if (message.type === "export") {
-      const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, userJourney: s.userJourney, contentPipeline: s.contentPipeline };
+      const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, scriptBodies: s.scriptBodies, userJourney: s.userJourney, contentPipeline: s.contentPipeline };
       const format = message.format || 'json';
       let content, filename, mimeType;
 

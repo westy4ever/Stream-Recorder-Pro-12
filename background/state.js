@@ -18,6 +18,11 @@ export let state = {
   networkLog: [],
   pending: {},
   xhrBodies: [],
+  // [NEW] see background/script-capture.js and config.js's MAX_SCRIPT_BODIES comment --
+  // populated by a background-side re-fetch of <script src="..."> URLs seen via
+  // network-capture.js's onCompleted, since webRequest itself never exposes body content
+  // for any resource type and page-hook.js's fetch/XHR wrapping doesn't see script-tag loads.
+  scriptBodies: [],
   userJourney: [],
   screenshots: [],
   contentPipeline: {
@@ -300,6 +305,13 @@ export function buildPersistPayload() {
       ...x,
       body: x.body ? x.body.substring(0, CONFIG.MAX_BODY_CHARS) : x.body
     })),
+    // [NEW] mirrors xhrBodies immediately above, same reasoning: without this, a
+    // service-worker restart mid-session would silently discard every script body
+    // captured so far, same bug class as the xhrBodies persistence gap fixed earlier.
+    scriptBodies: s.scriptBodies.slice(-CONFIG.MAX_SCRIPT_BODIES).map(x => ({
+      ...x,
+      body: x.body ? x.body.substring(0, CONFIG.MAX_BODY_CHARS) : x.body
+    })),
     userJourney: s.userJourney.slice(-100),
     contentPipeline: {
       ...s.contentPipeline,
@@ -352,6 +364,7 @@ export function persistState() {
       actions: payload.actions.slice(-50),
       networkLog: payload.networkLog.slice(-50),
       xhrBodies: payload.xhrBodies.slice(-50),
+      scriptBodies: payload.scriptBodies.slice(-50),
       userJourney: payload.userJourney.slice(-50),
       contentPipeline: {
         source: payload.contentPipeline.source || '',
@@ -418,6 +431,8 @@ export function restoreState(savedState) {
     // back after a service-worker restart the same way every sibling
     // collection already does, instead of silently staying empty.
     s.xhrBodies = savedState.xhrBodies || [];
+    // [NEW] mirrors xhrBodies restore immediately above, same reasoning.
+    s.scriptBodies = savedState.scriptBodies || [];
     s.userJourney = savedState.userJourney || [];
     s.contentPipeline = savedState.contentPipeline || { source: '', movieList: [], downloadLinks: [], encodedLinks: [], metadata: {}, sequence: [] };
     // [FIX] a savedState from before this field existed (an older persisted
@@ -481,6 +496,9 @@ export function cleanupMemory() {
     }
     if (s.xhrBodies.length > CONFIG.MAX_XHR_BODIES_SIZE) {
       s.xhrBodies = s.xhrBodies.slice(-CONFIG.MAX_XHR_BODIES_SIZE);
+    }
+    if (s.scriptBodies.length > CONFIG.MAX_SCRIPT_BODIES) {
+      s.scriptBodies = s.scriptBodies.slice(-CONFIG.MAX_SCRIPT_BODIES);
     }
     if (s.screenshots.length > CONFIG.MAX_SCREENSHOTS) {
       s.screenshots = s.screenshots.slice(-CONFIG.MAX_SCREENSHOTS);

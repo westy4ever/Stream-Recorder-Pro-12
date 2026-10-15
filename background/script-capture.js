@@ -35,6 +35,32 @@ const _seenScriptUrls = new Set();
  * the same player page (the normal workflow when a first capture missed something) and
  * scriptBodies came back completely empty, with nothing anywhere saying why.
  */
+// [NEW] scripts that never contain a site's player/extraction logic. Captured in full they
+// only bloat the export (cast SDKs alone were ~90 KB in a real capture), so they're skipped.
+// Matched on hostname suffix; CDNs that DO host site code (jsdelivr, unpkg, cdnjs) are
+// deliberately not listed.
+const NOISE_SCRIPT_HOSTS = [
+  'googletagmanager.com', 'google-analytics.com', 'googlesyndication.com',
+  'doubleclick.net', 'gstatic.com', 'cloudflareinsights.com', 'facebook.net',
+  'hotjar.com', 'clarity.ms', 'yandex.ru', 'mc.yandex.ru', 'histats.com',
+  'disqus.com', 'addthis.com', 'sharethis.com'
+];
+
+function isNoiseScript(url) {
+  try {
+    const u = new URL(url);
+    // the extension's own injected files (websocket-hook.js etc.) are not site code
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    const host = u.hostname.toLowerCase();
+    if (NOISE_SCRIPT_HOSTS.some(h => host === h || host.endsWith('.' + h))) return true;
+    // self-hosted analytics, e.g. umami.<site>/script.js
+    if (/^(umami|analytics|stats|plausible|matomo)\./.test(host)) return true;
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
 export function resetScriptCapture() {
   _seenScriptUrls.clear();
 }
@@ -76,7 +102,7 @@ function _recordFailure(entry, url, status, error) {
 export async function captureScriptBody(entry) {
   try {
     const url = entry.finalUrl || entry.url;
-    if (!url) return;
+    if (!url || isNoiseScript(url)) return;
 
     const s = state;
     // [FIX] check recording BEFORE marking the URL as seen -- otherwise a script that
@@ -101,7 +127,8 @@ export async function captureScriptBody(entry) {
       return;
     }
 
-    const truncated = text.length > CONFIG.MAX_BODY_CHARS;
+    const cap = Math.max(CONFIG.MAX_BODY_CHARS, CONFIG.MAX_SCRIPT_BODY_CHARS || 0);
+    const truncated = text.length > cap;
     s.scriptBodies.push({
       timestamp: Date.now(),
       tabId: entry.tabId,
@@ -109,7 +136,7 @@ export async function captureScriptBody(entry) {
       status: resp.status,
       size: text.length,
       truncated,
-      body: truncated ? text.substring(0, CONFIG.MAX_BODY_CHARS) : text
+      body: truncated ? text.substring(0, cap) : text
     });
     if (s.scriptBodies.length > CONFIG.MAX_SCRIPT_BODIES) s.scriptBodies.shift();
 

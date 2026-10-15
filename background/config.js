@@ -16,6 +16,12 @@ export const CONFIG = {
   // (confirmed directly in real captures -- vidcore.io alone loaded 11 in one page load), most
   // of them small webpack/CSS-module shims, not worth an unbounded cap.
   MAX_SCRIPT_BODIES: 60,
+  // [NEW] scripts get their own, larger size cap. A real capture (vidcore.io, 2026-10-15) had
+  // its main player bundle at 1.3 MB -- past the shared 1000 KB body limit (the Options page
+  // maximum), so the last ~284 KB was cut off. API responses rarely need more than 1 MB;
+  // single app bundles regularly do. The effective script cap is the larger of this and the
+  // user's max body size setting.
+  MAX_SCRIPT_BODY_CHARS: 5 * 1024 * 1024,
   MAX_RETRIES: 3,
   MAX_SCREENSHOTS: 20,
   AUTO_CLEANUP_INTERVAL: 60000,

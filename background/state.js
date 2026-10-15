@@ -310,7 +310,9 @@ export function buildPersistPayload() {
     // captured so far, same bug class as the xhrBodies persistence gap fixed earlier.
     scriptBodies: s.scriptBodies.slice(-CONFIG.MAX_SCRIPT_BODIES).map(x => ({
       ...x,
-      body: x.body ? x.body.substring(0, CONFIG.MAX_BODY_CHARS) : x.body
+      // [FIX] must use the same (larger) cap as script-capture.js, or a service-worker
+      // restart would silently re-truncate big bundles to the API-response limit.
+      body: x.body ? x.body.substring(0, Math.max(CONFIG.MAX_BODY_CHARS, CONFIG.MAX_SCRIPT_BODY_CHARS)) : x.body
     })),
     userJourney: s.userJourney.slice(-100),
     contentPipeline: {

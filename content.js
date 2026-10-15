@@ -1097,3 +1097,60 @@ if (document.readyState === 'complete') {
     }
   });
 }
+
+// ═══ CLOUDFLARE CHALLENGE STATUS (answers the background's challenge solver) ═══
+// [FIX] background/challenge-solver.js and challenge-solver-integration.js send
+// 'checkChallengeSolved', 'getChallengeStatus' and 'solveChallenge' to the tab, but no
+// content-script listener ever answered them. Effect: manual "🧩 Solve CF" ALWAYS reported
+// failure after 30s (no response -> solved=false) and closed the tab even when the user had
+// solved it; waitForChallengeSolved() always timed out; auto-solve requests went nowhere.
+// Only the top frame answers, so an unrelated iframe can't report a false "solved".
+(function () {
+  if (window !== window.top) return;
+
+  const CHALLENGE_SELECTORS = [
+    '#cf-browser-verification', '.cf-browser-verification', '#cf-challenge-running',
+    '#challenge-running', '.cf-im-under-attack', '#challenge-form', '#challenge-stage',
+    '#challenge-error-text', '#turnstile-wrapper'
+  ];
+  const TURNSTILE_SELECTORS = [
+    '.cf-turnstile iframe', 'iframe[src*="challenges.cloudflare.com"]',
+    'iframe[src*="turnstile"]', '.cf-turnstile', '[data-sitekey]'
+  ];
+
+  function challengePresent() {
+    try {
+      if (CHALLENGE_SELECTORS.some(sel => document.querySelector(sel))) return true;
+      const title = (document.title || '').toLowerCase();
+      if (title.includes('just a moment') || title.includes('attention required')) return true;
+      // A Turnstile widget on an otherwise near-empty page is a gate, not page content.
+      const textLen = ((document.body && document.body.innerText) || '').trim().length;
+      if (TURNSTILE_SELECTORS.some(sel => document.querySelector(sel)) && textLen < 1500) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function tryClickTurnstile() {
+    for (const sel of TURNSTILE_SELECTORS) {
+      const el = document.querySelector(sel);
+      if (el) {
+        try { el.click(); } catch (e) {}
+        return true;
+      }
+    }
+    return false;
+  }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || typeof message.type !== 'string') return;
+    if (message.type === 'checkChallengeSolved') {
+      sendResponse({ solved: !challengePresent(), url: location.href });
+    } else if (message.type === 'getChallengeStatus') {
+      sendResponse({ status: challengePresent() ? 'pending' : 'none', url: location.href });
+    } else if (message.type === 'solveChallenge') {
+      const present = challengePresent();
+      const clicked = present ? tryClickTurnstile() : false;
+      sendResponse({ present, clicked, url: location.href });
+    }
+  });
+})();

@@ -53,7 +53,9 @@ export function initMessageHandlers() {
       resetScriptCapture();   // [FIX] see script-capture.js
       s.userJourney = [];
       s.screenshots = [];
-      s.contentPipeline = { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };
+      // [FIX] encodedLinks was missing here, so it was undefined for every session started
+      // from the popup (only a service-worker restart re-added it, via restoreState).
+      s.contentPipeline = { source: '', movieList: [], downloadLinks: [], encodedLinks: [], metadata: {}, sequence: [] };
       s.recordTabId = message.tabId || null;
       // [FIX-tabfollow] a previous session's followed-tab set (popups the old recording
       // picked up via addRecordedTab()) must not leak into a brand-new recording -- those
@@ -436,6 +438,57 @@ export function initMessageHandlers() {
         s.contentPipeline.sequence.push({
           timestamp: Date.now(),
           type: 'movies_extracted',
+          data: message.data
+        });
+        scheduleSave();
+      }
+      sendResponse({ status: "ok" });
+    }
+
+    // ═══ WECIMA ENCODED LINKS EXTRACTED ═══
+    // [FIX] content.js has always sent this (extractWecimaEncodedLinks), and state.js
+    // stores, persists, trims and exports contentPipeline.encodedLinks -- but nothing
+    // here ever received the message, so encodedLinks was empty in every export.
+    else if (message.type === "wecima_encoded_links_extracted") {
+      if (s.recording && Array.isArray(message.data)) {
+        if (!Array.isArray(s.contentPipeline.encodedLinks)) s.contentPipeline.encodedLinks = [];
+        const have = new Set(s.contentPipeline.encodedLinks.map(l => l && l.url));
+        let added = 0;
+        for (const link of message.data) {
+          if (!link || !link.url || have.has(link.url)) continue;
+          have.add(link.url);
+          s.contentPipeline.encodedLinks.push({ ...link, pageUrl: message.url || null, timestamp: Date.now() });
+          added++;
+        }
+        if (added > 0) {
+          s.contentPipeline.sequence.push({
+            timestamp: Date.now(),
+            type: 'encoded_links_extracted',
+            url: message.url || null,
+            count: added
+          });
+          scheduleSave();
+        }
+      }
+      sendResponse({ status: "ok" });
+    }
+
+    // ═══ STREAMING CONTENT EXTRACTED ═══
+    // [FIX] same gap as above: content.js's extractStreamingContent() (EgyDead-style
+    // listing pages) sent this, but it was never handled, so those scraped items never
+    // reached contentPipeline. Stored the same way as arabic_movies_extracted.
+    else if (message.type === "streaming_content_extracted") {
+      if (s.recording && Array.isArray(message.data) && message.data.length > 0) {
+        s.contentPipeline.movieList = message.data;
+        try {
+          s.contentPipeline.source = new URL(message.url).hostname || 'streaming';
+        } catch (e) {
+          s.contentPipeline.source = 'streaming';
+        }
+        s.contentPipeline.sequence.push({
+          timestamp: Date.now(),
+          type: 'streaming_content_extracted',
+          url: message.url || null,
           data: message.data
         });
         scheduleSave();

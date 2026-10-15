@@ -22,6 +22,13 @@ export const CONFIG = {
   // single app bundles regularly do. The effective script cap is the larger of this and the
   // user's max body size setting.
   MAX_SCRIPT_BODY_CHARS: 5 * 1024 * 1024,
+  // [NEW] frameDocuments: the live HTML of the top page and every iframe (player pages
+  // included), captured from inside the page by content.js. Player config/keys are often
+  // written into that HTML per page load (e.g. embdmstrplayer.com's window.__EM_PLAYER__),
+  // so it must come from the SAME load as the recorded API calls -- a later re-fetch would
+  // carry different tokens. Snapshot only ever saved the top page, never iframes.
+  MAX_FRAME_DOCS: 40,
+  MAX_FRAME_DOC_CHARS: 2 * 1024 * 1024,
   MAX_RETRIES: 3,
   MAX_SCREENSHOTS: 20,
   AUTO_CLEANUP_INTERVAL: 60000,

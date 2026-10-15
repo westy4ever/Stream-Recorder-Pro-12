@@ -1154,3 +1154,65 @@ if (document.readyState === 'complete') {
     }
   });
 })();
+
+// ═══ FRAME DOCUMENT CAPTURE (live HTML of this page / iframe) ═══
+// [NEW] Players often write their config or per-load keys straight into their own HTML
+// (e.g. embdmstrplayer.com sets window.__EM_PLAYER__ in an inline <script>). Nothing captured
+// that before: webRequest never exposes document bodies, page-hook.js only sees fetch/XHR,
+// script-capture.js only <script src>, and Snapshot only saves the top page -- never the
+// player iframe. Re-fetching the URL later wouldn't help either: per-load tokens would differ
+// from the recorded API calls. So each frame sends its OWN live HTML from inside the page,
+// at DOMContentLoaded and again shortly after load (inline config set late). The background
+// de-duplicates and only keeps it while recording, for the recorded tab(s).
+(function () {
+  let recording = false;
+  let sentLengths = new Set();
+
+  function send(reason) {
+    if (!recording) return;
+    let html;
+    try {
+      html = '<!doctype html>\n' + document.documentElement.outerHTML;
+    } catch (e) { return; }
+    if (!html || sentLengths.has(html.length)) return;
+    sentLengths.add(html.length);
+    try {
+      chrome.runtime.sendMessage({
+        type: 'frameDocument',
+        url: location.href,
+        isTop: window === window.top,
+        reason,
+        html
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  function captureWhenReady() {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => send('domcontentloaded'), { once: true });
+    } else {
+      send('ready');
+    }
+    if (document.readyState !== 'complete') {
+      window.addEventListener('load', () => setTimeout(() => send('load+2s'), 2000), { once: true });
+    } else {
+      setTimeout(() => send('complete+2s'), 2000);
+    }
+  }
+
+  try {
+    chrome.runtime.sendMessage({ type: 'getRecordingStatus' }, (response) => {
+      if (chrome.runtime.lastError) return;
+      recording = !!(response && response.recording);
+      if (recording) captureWhenReady();
+    });
+  } catch (e) {}
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message && message.type === 'recordingStateChanged') {
+      const was = recording;
+      recording = !!message.recording;
+      if (recording && !was) { sentLengths = new Set(); captureWhenReady(); }
+    }
+  });
+})();

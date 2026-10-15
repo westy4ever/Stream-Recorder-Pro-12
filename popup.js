@@ -273,6 +273,7 @@ const EXPORT_SECTIONS = [
   { key: 'networkLog', label: 'networkLog' },
   { key: 'xhrBodies', label: 'xhrBodies' },
   { key: 'scriptBodies', label: 'scriptBodies' },
+  { key: 'frameDocuments', label: 'frameDocuments' },
   { key: 'actions', label: 'actions' },
   { key: 'userJourney', label: 'userJourney' },
   { key: 'contentPipeline', label: 'contentPipeline' },
@@ -441,6 +442,7 @@ async function doSplitExport(data, format) {
   const manifestText = `Stream Recorder Pro — split export manifest\n` +
     `Extension version: ${_ver}\n` +
     `Scripts captured: ${_scriptOk} OK, ${_scripts.length - _scriptOk} failed\n` +
+    `Page/iframe HTML captured: ${Array.isArray(data.frameDocuments) ? data.frameDocuments.length : 0}\n` +
     `Generated: ${exportTimestamp}\n` +
     `Max file size target: ${(MAX_CHUNK_BYTES / 1024 / 1024).toFixed(0)} MB per file\n\n` +
     manifest.join('\n') + '\n';

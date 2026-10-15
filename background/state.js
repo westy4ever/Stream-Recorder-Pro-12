@@ -23,6 +23,7 @@ export let state = {
   // network-capture.js's onCompleted, since webRequest itself never exposes body content
   // for any resource type and page-hook.js's fetch/XHR wrapping doesn't see script-tag loads.
   scriptBodies: [],
+  frameDocuments: [],
   userJourney: [],
   screenshots: [],
   contentPipeline: {
@@ -314,6 +315,7 @@ export function buildPersistPayload() {
       // restart would silently re-truncate big bundles to the API-response limit.
       body: x.body ? x.body.substring(0, Math.max(CONFIG.MAX_BODY_CHARS, CONFIG.MAX_SCRIPT_BODY_CHARS)) : x.body
     })),
+    frameDocuments: (s.frameDocuments || []).slice(-CONFIG.MAX_FRAME_DOCS),
     userJourney: s.userJourney.slice(-100),
     contentPipeline: {
       ...s.contentPipeline,
@@ -367,6 +369,7 @@ export function persistState() {
       networkLog: payload.networkLog.slice(-50),
       xhrBodies: payload.xhrBodies.slice(-50),
       scriptBodies: payload.scriptBodies.slice(-50),
+      frameDocuments: (payload.frameDocuments || []).slice(-20),
       userJourney: payload.userJourney.slice(-50),
       contentPipeline: {
         source: payload.contentPipeline.source || '',
@@ -435,6 +438,7 @@ export function restoreState(savedState) {
     s.xhrBodies = savedState.xhrBodies || [];
     // [NEW] mirrors xhrBodies restore immediately above, same reasoning.
     s.scriptBodies = savedState.scriptBodies || [];
+    s.frameDocuments = savedState.frameDocuments || [];
     s.userJourney = savedState.userJourney || [];
     s.contentPipeline = savedState.contentPipeline || { source: '', movieList: [], downloadLinks: [], encodedLinks: [], metadata: {}, sequence: [] };
     // [FIX] a savedState from before this field existed (an older persisted
@@ -501,6 +505,9 @@ export function cleanupMemory() {
     }
     if (s.scriptBodies.length > CONFIG.MAX_SCRIPT_BODIES) {
       s.scriptBodies = s.scriptBodies.slice(-CONFIG.MAX_SCRIPT_BODIES);
+    }
+    if (s.frameDocuments && s.frameDocuments.length > CONFIG.MAX_FRAME_DOCS) {
+      s.frameDocuments = s.frameDocuments.slice(-CONFIG.MAX_FRAME_DOCS);
     }
     if (s.screenshots.length > CONFIG.MAX_SCREENSHOTS) {
       s.screenshots = s.screenshots.slice(-CONFIG.MAX_SCREENSHOTS);

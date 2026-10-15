@@ -1,5 +1,5 @@
 // message-handlers.js - All chrome.runtime.onMessage handlers
-import { state, scheduleSave, persistState, cleanupMemory, broadcastRecordingState, registrableDomain, isSameSite, setPrimaryDomainFromUrl } from './state.js';
+import { state, scheduleSave, persistState, cleanupMemory, broadcastRecordingState, registrableDomain, isSameSite, setPrimaryDomainFromUrl, shouldRecordTab, shouldRecordUrl } from './state.js';
 import { CONFIG } from './config.js';
 import { resetScriptCapture } from './script-capture.js';
 import { handleCloudflareChallenge, solveManually, CHALLENGE_SOLVING } from './challenge-solver.js';
@@ -50,6 +50,7 @@ export function initMessageHandlers() {
       s.pending = {};
       s.xhrBodies = [];
       s.scriptBodies = [];
+      s.frameDocuments = [];
       resetScriptCapture();   // [FIX] see script-capture.js
       s.userJourney = [];
       s.screenshots = [];
@@ -152,6 +153,7 @@ export function initMessageHandlers() {
           networkLog: s.networkLog,
           xhrBodies: s.xhrBodies,
           scriptBodies: s.scriptBodies,
+          frameDocuments: s.frameDocuments || [],
           userJourney: s.userJourney,
           contentPipeline: s.contentPipeline,
           // [FIX] this used to truncate every screenshot's dataUrl to 100 characters -- since
@@ -267,6 +269,7 @@ export function initMessageHandlers() {
           networkLog: s.networkLog,
           xhrBodies: s.xhrBodies,
           scriptBodies: s.scriptBodies,
+          frameDocuments: s.frameDocuments || [],
           userJourney: s.userJourney,
           contentPipeline: s.contentPipeline
         }
@@ -276,7 +279,7 @@ export function initMessageHandlers() {
 
     // ═══ EXPORT ═══
     else if (message.type === "export") {
-      const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, scriptBodies: s.scriptBodies, userJourney: s.userJourney, contentPipeline: s.contentPipeline };
+      const data = { filterMode: s.filterMode, actions: s.actions, networkLog: s.networkLog, xhrBodies: s.xhrBodies, scriptBodies: s.scriptBodies, frameDocuments: s.frameDocuments || [], userJourney: s.userJourney, contentPipeline: s.contentPipeline };
       const format = message.format || 'json';
       let content, filename, mimeType;
 
@@ -562,6 +565,35 @@ export function initMessageHandlers() {
     }
 
     // ═══ XHR RESPONSE BODY ═══
+    // ═══ FRAME DOCUMENT (live HTML of the page or an iframe, from content.js) ═══
+    else if (message.type === "frameDocument") {
+      const tabId = sender.tab ? sender.tab.id : null;
+      if (s.recording && typeof message.html === "string" && message.url &&
+          shouldRecordTab(tabId) && shouldRecordUrl(message.url)) {
+        if (!Array.isArray(s.frameDocuments)) s.frameDocuments = [];
+        const html = message.html;
+        // same frame re-sent at DOMContentLoaded and load: keep only changed versions
+        const dup = s.frameDocuments.some(d => d.url === message.url && d.size === html.length);
+        if (!dup) {
+          const truncated = html.length > CONFIG.MAX_FRAME_DOC_CHARS;
+          s.frameDocuments.push({
+            timestamp: Date.now(),
+            tabId,
+            frameId: sender.frameId,
+            url: message.url,
+            isTop: !!message.isTop,
+            reason: message.reason || null,
+            size: html.length,
+            truncated,
+            html: truncated ? html.slice(0, CONFIG.MAX_FRAME_DOC_CHARS) : html
+          });
+          if (s.frameDocuments.length > CONFIG.MAX_FRAME_DOCS) s.frameDocuments.shift();
+          scheduleSave();
+        }
+      }
+      sendResponse({ status: "ok" });
+    }
+
     else if (message.type === "xhrResponseBody") {
       if (s.recording) {
         s.xhrBodies.push({

@@ -108,12 +108,27 @@ popOutBtn.onclick = () => {
 };
 
 // Load saved preferences
-chrome.storage.local.get(["xhrOnly", "autoSnapshot", "hideTMDB", "recordTab"], (result) => {
-  xhrOnlyCheckbox.checked = !!result.xhrOnly;
-  autoSnapshotCheckbox.checked = !!result.autoSnapshot;
+// [CHANGE] Auto-snapshot, "Record: Current Tab/All Tabs" and the XHR-only filter now start
+// from the Options page defaults EVERY time the popup opens. Previously the popup never read
+// those Options settings at all and fell back to auto-snapshot OFF and "All Tabs", so they
+// had to be re-set by hand before every recording (and were easy to forget). You can still
+// change them in the popup for one recording; they reset to the Options defaults next time.
+// While a recording is running, getRecordingStatus below overrides these with the live values.
+chrome.storage.local.get(["hideTMDB"], (result) => {
   hideTMDBCheckbox.checked = result.hideTMDB !== false;
-  recordTabSelect.value = result.recordTab || "all";
-  updateFilterHint();
+});
+chrome.storage.sync.get(["defaultRecordingMode", "defaultFilterMode", "autoSnapshotDefault"], (defaults) => {
+  // Ask first whether a recording is live: if it is, the popup must show (and never alter)
+  // that session's real settings, which the getRecordingStatus handler below fills in.
+  // Nothing is sent to the background here -- Start passes these values when it is clicked.
+  chrome.runtime.sendMessage({ type: "getRecordingStatus" }, (status) => {
+    void chrome.runtime.lastError;
+    if (status && status.recording) return;
+    xhrOnlyCheckbox.checked = (defaults.defaultFilterMode || "all") === "xhr";
+    autoSnapshotCheckbox.checked = defaults.autoSnapshotDefault !== false;   // default ON
+    recordTabSelect.value = defaults.defaultRecordingMode || "current";      // default Current Tab
+    updateFilterHint();
+  });
 });
 
 xhrOnlyCheckbox.onchange = () => {
@@ -186,7 +201,7 @@ startBtn.onclick = () => {
         tabId: tabId,
         allowedDomains: cfg.allowedDomains || [],
         blockedDomains: cfg.blockedDomains || [],
-        maxBodySize: cfg.maxBodySize || 100
+        maxBodySize: cfg.maxBodySize || 1000
       });
     });
   };

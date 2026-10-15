@@ -11,10 +11,10 @@ function loadSettings() {
     'defaultSiteName', 'includeComments', 'includeTypeHints', 'exportFormat',
     'browserProxy', 'tmdbApiKey', 'torrserverUrl', 'captureDownloadsOnly'
   ], (result) => {
-    document.getElementById('defaultRecordingMode').value = result.defaultRecordingMode || 'all';
+    document.getElementById('defaultRecordingMode').value = result.defaultRecordingMode || 'current';
     document.getElementById('defaultFilterMode').value = result.defaultFilterMode || 'all';
     document.getElementById('autoSnapshotDefault').checked = result.autoSnapshotDefault !== false;
-    document.getElementById('maxBodySize').value = result.maxBodySize || 100;
+    document.getElementById('maxBodySize').value = result.maxBodySize || 1000;
     document.getElementById('maxScreenshots').value = result.maxScreenshots || 20;
     document.getElementById('allowedDomains').value = (result.allowedDomains || []).join(', ');
     document.getElementById('blockedDomains').value = (result.blockedDomains || []).join(', ');
@@ -71,7 +71,7 @@ function setupEventListeners() {
       defaultRecordingMode: document.getElementById('defaultRecordingMode').value,
       defaultFilterMode: document.getElementById('defaultFilterMode').value,
       autoSnapshotDefault: document.getElementById('autoSnapshotDefault').checked,
-      maxBodySize: parseInt(document.getElementById('maxBodySize').value) || 100,
+      maxBodySize: parseInt(document.getElementById('maxBodySize').value) || 1000,
       maxScreenshots: parseInt(document.getElementById('maxScreenshots').value) || 20,
       defaultSiteName: document.getElementById('defaultSiteName').value || 'CustomSite',
       includeComments: document.getElementById('includeComments').checked,
@@ -106,10 +106,10 @@ function setupEventListeners() {
   document.getElementById('resetDefaults').addEventListener('click', () => {
     if (confirm('Reset all settings to default values?')) {
       const defaults = {
-        defaultRecordingMode: 'all',
+        defaultRecordingMode: 'current',
         defaultFilterMode: 'all',
         autoSnapshotDefault: true,
-        maxBodySize: 100,
+        maxBodySize: 1000,
         maxScreenshots: 20,
         allowedDomains: [],
         blockedDomains: [],

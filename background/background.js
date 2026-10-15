@@ -11,6 +11,23 @@ import { CHALLENGE_SOLVING } from './challenge-solver.js';
 
 console.log("Stream Recorder Pro background ready (modularized)");
 
+// ═══ ONE-TIME DEFAULTS UPGRADE ═══
+// [CHANGE] new defaults: 1000 KB max body size, auto-snapshot ON, record Current Tab.
+// Anyone who had clicked "Save Advanced Settings" before this change has the OLD defaults
+// (100 KB, All Tabs) stored, and stored values win over code defaults -- so move them to the
+// new defaults once. Guarded by a flag, so a value changed deliberately after this upgrade is
+// never touched again.
+chrome.storage.sync.get(["defaultsV2Applied", "maxBodySize"], (cfg) => {
+  if (chrome.runtime.lastError || cfg.defaultsV2Applied) return;
+  const update = {
+    defaultsV2Applied: true,
+    defaultRecordingMode: "current",
+    autoSnapshotDefault: true
+  };
+  if (!cfg.maxBodySize || cfg.maxBodySize < 1000) update.maxBodySize = 1000;
+  chrome.storage.sync.set(update, () => void chrome.runtime.lastError);
+});
+
 // ═══ RESTORE STATE ON LOAD ═══
 // [FIX] the actual restore now happens in state.js's stateReadyPromise --
 // created the instant that module is evaluated, which is BEFORE

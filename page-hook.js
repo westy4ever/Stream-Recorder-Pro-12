@@ -3,7 +3,7 @@
 
 (function () {
   const SOURCE_TAG = "stream-recorder-page-hook";
-  let MAX_BODY_CHARS = 500000;
+  let MAX_BODY_CHARS = 1000 * 1024;   // matches the 1000 KB default in background/config.js
   const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
 
   // [FIX] confirmed directly: isRecordingActive starts false and only becomes

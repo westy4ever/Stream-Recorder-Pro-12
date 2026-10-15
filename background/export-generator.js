@@ -1,6 +1,10 @@
 // export-generator.js - Generate PERFECT Python extractor code
 import { state } from './state.js';
 import { isArabicMovieSite, isYTSSite, isSaveFilesSite, isAdDomain } from './site-detection.js';
+// [NEW] see discoverStaticConstantsFromScriptBodies()'s own comment below -- reusing
+// js-deobfuscator.js's already-working extraction (URLs, variables, API endpoints) on
+// scriptBodies content rather than re-implementing a second copy of the same regexes here.
+import { deobfuscateJavaScript } from './js-deobfuscator.js';
 
 // [FIX] captured category titles and URLs were embedded into generated Python source as
 // plain "..." string literals -- title got a partial escape (double-quotes only, no
@@ -47,12 +51,23 @@ export function generateResolverCode(host, capturedData) {
   const s = state;
   const networkLog = capturedData?.networkLog || s.networkLog || [];
   const xhrBodies = capturedData?.xhrBodies || s.xhrBodies || [];
+  // [NEW] see discoverStaticConstantsFromScriptBodies()'s own comment in
+  // generatePluginExtractor() -- this single-host generator is the most direct analog to the
+  // real moviesapi.to case (one host, one resolver), so it gets the same treatment: scoped to
+  // just the scripts this host itself loaded.
+  const scriptBodies = capturedData?.scriptBodies || s.scriptBodies || [];
 
   const hostRequests = networkLog.filter(entry => {
     try {
       return new URL(entry.url).hostname.includes(host);
     } catch { return false; }
   });
+  const hostScripts = scriptBodies.filter(b => {
+    try {
+      return b.url && new URL(b.url).hostname.includes(host);
+    } catch { return false; }
+  });
+  const hostScriptFindings = discoverStaticConstantsFromScriptBodies(hostScripts);
 
   let code = `# -*- coding: utf-8 -*-\n`;
   code += `"""\n`;
@@ -74,6 +89,24 @@ export function generateResolverCode(host, capturedData) {
   if (getRequests.length > 0) {
     code += `    Detected GET requests to this host.\n`;
   }
+  // [NEW] hardcoded keys/endpoints found in THIS host's own captured JS bundle(s) --
+  // UNCONFIRMED guesses, same caveat as generatePluginExtractor()'s equivalent block: a
+  // human still needs to check where/how the site actually sends a "possible key" before
+  // using it (this is exactly how moviesapi.to's real x-player-key was found, just
+  // previously only by hand).
+  if (hostScriptFindings.length > 0) {
+    code += `    \n`;
+    code += `    DETECTED in this host's own JS bundle(s) -- UNCONFIRMED, verify before use:\n`;
+    for (const f of hostScriptFindings.slice(0, 5)) {
+      code += `        ${safeDocstringText(f.scriptUrl)}\n`;
+      for (const k of f.possibleKeys.slice(0, 5)) {
+        code += `            possible key: ${safeDocstringText(k.name)} = "${safeDocstringText(k.value)}"\n`;
+      }
+      for (const ep of f.apiEndpoints.slice(0, 5)) {
+        code += `            possible endpoint: ${safeDocstringText(ep)}\n`;
+      }
+    }
+  }
 
   code += `    """\n`;
   code += `    try:\n`;
@@ -88,6 +121,14 @@ export function generateResolverCode(host, capturedData) {
     const samplePost = postRequests[0];
     code += `        # POST request detected to: ${samplePost.url}\n`;
     code += `        # TODO: Implement POST-based resolution\n`;
+    code += `        \n`;
+  }
+
+  if (hostScriptFindings.length > 0 && hostScriptFindings.some(f => f.possibleKeys.length > 0)) {
+    code += `        # TODO: this host's own JS bundle contained a possible hardcoded\n`;
+    code += `        # key/constant (see the docstring above) -- if it's a fixed auth\n`;
+    code += `        # header (confirm on the real site first), add it here, e.g.:\n`;
+    code += `        # extra_headers={"x-player-key": "<value from docstring above>"}\n`;
     code += `        \n`;
   }
 
@@ -149,8 +190,15 @@ export function generatePluginExtractor(siteName, capturedData) {
   // a pre-identified, high-confidence signal) but was never even passed
   // into the analysis function at all, discarding it entirely.
   const userJourney = capturedData?.userJourney || s.userJourney || [];
+  // [NEW] see discoverStaticConstantsFromScriptBodies()/discoverStreamResolversFromCapturedData()'s
+  // own comments below -- scriptBodies (background/script-capture.js's re-fetched <script
+  // src="..."> content) was captured but never actually fed into this analysis, so a site's own
+  // app bundle -- exactly where a hardcoded key like moviesapi.to's x-player-key or a decrypt/
+  // signing routine actually lives -- never surfaced in a generated extractor, even once it was
+  // sitting right there in the recording.
+  const scriptBodies = capturedData?.scriptBodies || s.scriptBodies || [];
 
-  const analysis = analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney);
+  const analysis = analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies);
 
   const code = generateFullPluginExtractor(siteName, analysis);
 
@@ -1141,7 +1189,7 @@ const isSegmentUrl = (u) => /\/seg-\d+-/i.test(u);
 const bodyUrlPattern = /https?:\/\/[^\s"'<>\\]+?\/[^\s"'<>\\]*?\.(?:m3u8|mp4|ts|txt)(?:\?[^\s"'<>\\]*)?/gi;
 const isAdOrJunkUrl = (u) => isAdDomain(u) || /prebid/i.test(u);
 
-function discoverStreamResolversFromCapturedData(networkLog, xhrBodies) {
+function discoverStreamResolversFromCapturedData(networkLog, xhrBodies, scriptBodies) {
   const streamUrls = [];
   for (const entry of networkLog) {
     if (!entry.url || isSegmentUrl(entry.url) || isAdOrJunkUrl(entry.url)) continue;
@@ -1157,6 +1205,25 @@ function discoverStreamResolversFromCapturedData(networkLog, xhrBodies) {
   }
 
   for (const body of xhrBodies) {
+    if (!body.body) continue;
+    const matches = body.body.match(bodyUrlPattern) || [];
+    for (const rawUrl of matches) {
+      const url = rawUrl.replace(/\\\//g, '/');
+      if (isSegmentUrl(url) || isAdOrJunkUrl(url)) continue;
+      streamUrls.push({
+        url: url,
+        referer: body.url || '',
+        status: body.status || 0
+      });
+    }
+  }
+
+  // [NEW] same bodyUrlPattern scan as xhrBodies just above, now also run over scriptBodies
+  // (background/script-capture.js's re-fetched <script src="..."> content) -- a site's own
+  // app bundle can embed a literal stream URL (a hardcoded fallback/default, a CDN base,
+  // a sample used during a signing routine) the same way an XHR JSON response can, and
+  // there was previously no path for that to reach this host list at all.
+  for (const body of (scriptBodies || [])) {
     if (!body.body) continue;
     const matches = body.body.match(bodyUrlPattern) || [];
     for (const rawUrl of matches) {
@@ -1194,6 +1261,54 @@ function discoverStreamResolversFromCapturedData(networkLog, xhrBodies) {
     referers: [...h.referers],
     patterns: [...h.patterns]
   }));
+}
+
+// [NEW] this is the other half of wiring scriptBodies into this generator (see
+// discoverStreamResolversFromCapturedData above for the stream-URL half). A site's own app
+// bundle is exactly where a hardcoded signing/auth constant lives -- confirmed directly on a
+// real site this session: moviesapi.to's x-player-key header turned out to be a plain
+// hardcoded JS string literal (`var fz = "<64-hex-char value>"`), not a per-session token, and
+// was only found because its actual JS bundle was manually supplied and read by hand. With
+// scriptBodies now captured automatically, this does that same kind of read automatically on
+// every recording, instead of needing a one-off manual JS dump every time a new site needs it.
+// Reuses js-deobfuscator.js's deobfuscateJavaScript() (URL/variable/API-endpoint extraction)
+// rather than re-implementing a second copy of the same regexes here. Only returns an entry
+// for a script where something was actually found, to avoid drowning the real finds in noise
+// from the 20-60+ small webpack/CSS-module shims a modern SPA can load per page.
+function discoverStaticConstantsFromScriptBodies(scriptBodies) {
+  const findings = [];
+  for (const script of (scriptBodies || [])) {
+    if (!script.body) continue;
+    let result;
+    try {
+      result = deobfuscateJavaScript(script.body);
+    } catch (e) {
+      continue;
+    }
+    if (!result) continue;
+
+    // Variables whose value looks like a fixed auth/signing constant: a long hex string
+    // (the exact shape of moviesapi.to's real x-player-key) is the strongest, lowest-noise
+    // signal available without actually understanding the site-specific code -- a short or
+    // mixed-content value is far more likely to be an ordinary UI string, so this
+    // deliberately stays conservative rather than flooding results with false positives.
+    const possibleKeys = Object.entries(result.extractedVariables || {})
+      .filter(([, value]) => typeof value === 'string' && /^[a-f0-9]{24,}$/i.test(value))
+      .map(([name, value]) => ({ name, value }));
+
+    const apiEndpoints = (result.extractedAPIEndpoints || []).slice(0, 10);
+    const notableUrls = (result.extractedUrls || []).slice(0, 10);
+
+    if (possibleKeys.length === 0 && apiEndpoints.length === 0 && notableUrls.length === 0) continue;
+
+    findings.push({
+      scriptUrl: script.url || '',
+      possibleKeys,
+      apiEndpoints,
+      notableUrls
+    });
+  }
+  return findings;
 }
 
 // [NEW] confirmed directly, with a real grep against this entire file
@@ -1360,7 +1475,8 @@ function formatRouteTreeForDisplay(tree, depth) {
   return output;
 }
 
-function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney) {
+function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies) {
+  scriptBodies = scriptBodies || [];
   const analysis = {
     baseUrl: null,
     categories: [],
@@ -2023,9 +2139,17 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // [NEW] additive, per-host referer/pattern grouping, ported from
   // api-discoverer.js -- see discoverStreamResolversFromCapturedData's
   // own comment for why this one specifically, and not its siblings.
-  const streamResolverHosts = discoverStreamResolversFromCapturedData(networkLog, xhrBodies);
+  const streamResolverHosts = discoverStreamResolversFromCapturedData(networkLog, xhrBodies, scriptBodies);
   if (streamResolverHosts.length > 0) {
     analysis.perHostStreamInfo = streamResolverHosts;
+  }
+
+  // [NEW] see discoverStaticConstantsFromScriptBodies()'s own comment -- the other half of
+  // actually using scriptBodies in this analysis, surfacing hardcoded keys/endpoints found
+  // in a site's own captured app bundle rather than requiring a manual JS dump every time.
+  const scriptFindings = discoverStaticConstantsFromScriptBodies(scriptBodies);
+  if (scriptFindings.length > 0) {
+    analysis.scriptBundleFindings = scriptFindings;
   }
 
   // [NEW] additive, genuinely different shape of information from this
@@ -2111,6 +2235,30 @@ function generateFullPluginExtractor(siteName, analysis) {
       if (paramKeys.length > 0) {
         const safeParams = JSON.stringify(ep.sampleParams).replace(/"""/g, "'''");
         code += `        params: ${safeParams}\n`;
+      }
+    }
+    code += `\n`;
+  }
+  // [NEW] hardcoded keys/endpoints/urls found by actually reading the site's own captured
+  // app bundle (background/script-capture.js + discoverStaticConstantsFromScriptBodies()
+  // above) -- this is exactly the kind of thing that previously needed a one-off manual JS
+  // dump to find (see moviesapi.to's x-player-key, found this same way by hand). A
+  // "possible key" is a conservative guess (a long hex-looking constant), not a confirmed
+  // header name -- it still needs a human to check where/how the site actually sends it.
+  if (analysis.scriptBundleFindings && analysis.scriptBundleFindings.length > 0) {
+    code += `DETECTED: possible static constants/endpoints found in this site's own\n`;
+    code += `captured JS bundle(s) -- UNCONFIRMED, verify against the real site before use:\n`;
+    for (const f of analysis.scriptBundleFindings.slice(0, 10)) {
+      const safeScriptUrl = safeDocstringText(f.scriptUrl);
+      code += `    ${safeScriptUrl}\n`;
+      for (const k of f.possibleKeys.slice(0, 5)) {
+        code += `        possible key: ${safeDocstringText(k.name)} = "${safeDocstringText(k.value)}"\n`;
+      }
+      for (const ep of f.apiEndpoints.slice(0, 5)) {
+        code += `        possible endpoint: ${safeDocstringText(ep)}\n`;
+      }
+      for (const u of f.notableUrls.slice(0, 3)) {
+        code += `        url: ${safeDocstringText(u)}\n`;
       }
     }
     code += `\n`;

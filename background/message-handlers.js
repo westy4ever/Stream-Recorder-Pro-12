@@ -1,6 +1,7 @@
 // message-handlers.js - All chrome.runtime.onMessage handlers
 import { state, scheduleSave, persistState, cleanupMemory, broadcastRecordingState, registrableDomain, isSameSite, setPrimaryDomainFromUrl } from './state.js';
 import { CONFIG } from './config.js';
+import { resetScriptCapture } from './script-capture.js';
 import { handleCloudflareChallenge, solveManually, CHALLENGE_SOLVING } from './challenge-solver.js';
 import {
   isYTSSite, isArabicMovieSite, isSaveFilesSite,
@@ -49,6 +50,7 @@ export function initMessageHandlers() {
       s.pending = {};
       s.xhrBodies = [];
       s.scriptBodies = [];
+      resetScriptCapture();   // [FIX] see script-capture.js
       s.userJourney = [];
       s.screenshots = [];
       s.contentPipeline = { source: '', movieList: [], downloadLinks: [], metadata: {}, sequence: [] };

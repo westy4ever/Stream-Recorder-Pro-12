@@ -29,6 +29,41 @@ import { CONFIG } from './config.js';
 const _seenScriptUrls = new Set();
 
 /**
+ * [FIX] Must be called when a new recording starts. _seenScriptUrls is module-level, so it
+ * used to survive across recordings for the whole life of the service worker: any script
+ * URL seen during an EARLIER session was silently skipped in every later one. Re-record
+ * the same player page (the normal workflow when a first capture missed something) and
+ * scriptBodies came back completely empty, with nothing anywhere saying why.
+ */
+export function resetScriptCapture() {
+  _seenScriptUrls.clear();
+}
+
+// [FIX] a failed re-fetch used to vanish without trace (console.debug only), so an empty
+// scriptBodies export was indistinguishable from "this page loaded no scripts". Failures
+// are now recorded as body-less entries carrying the reason -- every consumer
+// (export-generator.js) already skips entries whose body is empty, so nothing downstream
+// changes, but the export itself now shows which scripts were attempted and why they failed.
+function _recordFailure(entry, url, status, error) {
+  try {
+    const s = state;
+    if (!s.recording) return;
+    s.scriptBodies.push({
+      timestamp: Date.now(),
+      tabId: entry && entry.tabId,
+      url,
+      status: status || 0,
+      size: 0,
+      truncated: false,
+      body: null,
+      error: String(error || 'unknown error').slice(0, 300)
+    });
+    if (s.scriptBodies.length > CONFIG.MAX_SCRIPT_BODIES) s.scriptBodies.shift();
+    scheduleSave();
+  } catch (e) {}
+}
+
+/**
  * Fire-and-forget: given a completed webRequest entry for a script resource, fetch its
  * body independently from the background and add it to state.scriptBodies. Never throws
  * -- a failure here (CORS quirk, network blip, a script that 404s on re-fetch because it
@@ -41,16 +76,30 @@ const _seenScriptUrls = new Set();
 export async function captureScriptBody(entry) {
   try {
     const url = entry.finalUrl || entry.url;
-    if (!url || _seenScriptUrls.has(url)) return;
-    _seenScriptUrls.add(url);
+    if (!url) return;
 
     const s = state;
-    if (!s.recording) return;
+    // [FIX] check recording BEFORE marking the URL as seen -- otherwise a script that
+    // finished loading just after Stop was marked seen and then never captured again.
+    if (!s.recording || _seenScriptUrls.has(url)) return;
+    _seenScriptUrls.add(url);
 
-    const resp = await fetch(url, { credentials: "omit" });
-    if (!resp.ok) return;
+    let resp;
+    try {
+      resp = await fetch(url, { credentials: "omit" });
+    } catch (e) {
+      _recordFailure(entry, url, 0, 'fetch failed: ' + (e && e.message));
+      return;
+    }
+    if (!resp.ok) {
+      _recordFailure(entry, url, resp.status, 'HTTP ' + resp.status + ' on background re-fetch');
+      return;
+    }
     const text = await resp.text();
-    if (!text) return;
+    if (!text) {
+      _recordFailure(entry, url, resp.status, 'empty body on background re-fetch');
+      return;
+    }
 
     const truncated = text.length > CONFIG.MAX_BODY_CHARS;
     s.scriptBodies.push({
@@ -66,6 +115,7 @@ export async function captureScriptBody(entry) {
 
     scheduleSave();
   } catch (e) {
+    _recordFailure(entry, entry && (entry.finalUrl || entry.url), 0, e && e.message);
     // Silent by design -- see function doc above. Left as a console.debug (not warn/error)
     // so it doesn't look like a real problem in the extension's own console during normal
     // use, while still being visible if someone's actively debugging this file.

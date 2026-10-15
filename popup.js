@@ -433,7 +433,14 @@ async function doSplitExport(data, format) {
     }
   }
 
+  // [NEW] extension version + script-capture count in every manifest, so an export made
+  // by an outdated (not reloaded) copy of the extension is obvious at a glance.
+  const _ver = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '?';
+  const _scripts = Array.isArray(data.scriptBodies) ? data.scriptBodies : [];
+  const _scriptOk = _scripts.filter(b => b && b.body).length;
   const manifestText = `Stream Recorder Pro — split export manifest\n` +
+    `Extension version: ${_ver}\n` +
+    `Scripts captured: ${_scriptOk} OK, ${_scripts.length - _scriptOk} failed\n` +
     `Generated: ${exportTimestamp}\n` +
     `Max file size target: ${(MAX_CHUNK_BYTES / 1024 / 1024).toFixed(0)} MB per file\n\n` +
     manifest.join('\n') + '\n';

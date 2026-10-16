@@ -9,7 +9,7 @@ import {
   extractAllYTSPages, buildMagnetLink, isSuspectedBackend,
   isAdDomain, isPopupOrRedirect, isContentDomain, isMediaUrl
 } from './site-detection.js';
-import { captureScreenshot, captureSnapshot, scheduleAutoSnapshot, pendingAutoSnapshotTimers, expectingSnapshotFilename, pendingDownloadFilenames } from './screenshot.js';
+import { captureScreenshot, captureSnapshot, scheduleAutoSnapshot, resetSnapshotState, pendingAutoSnapshotTimers, expectingSnapshotFilename, pendingDownloadFilenames } from './screenshot.js';
 import { exportAsCSV, exportAsHAR, exportAsMarkdown } from './export-utils.js';
 import { getTorrentLinks } from './torrent-utils.js';
 
@@ -52,6 +52,7 @@ export function initMessageHandlers() {
       s.scriptBodies = [];
       s.frameDocuments = [];
       resetScriptCapture();   // [FIX] see script-capture.js
+      resetSnapshotState();   // [FIX] see screenshot.js
       s.userJourney = [];
       s.screenshots = [];
       // [FIX] encodedLinks was missing here, so it was undefined for every session started

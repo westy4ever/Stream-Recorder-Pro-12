@@ -37,6 +37,66 @@ const lastSnapshotTime = {};
 // skips a too-soon repeat -- without affecting genuine navigation to a
 // new page, which always produces a different URL.
 const lastSnapshotUrl = {};
+// [FIX] the strict "same URL as last capture -> skip" rule above also blocked the most
+// important snapshot of all: a page loads (snapshot #1 at URL X), then the user clicks
+// "Watch" / a server tab and the content is revealed IN PLACE (same URL X) -- that reveal was
+// silently never captured. Same-URL repeats are now allowed up to a small cap per URL, which
+// still stops the ~30-server-button spam the rule was added for.
+const SNAPSHOT_MAX_PER_URL = 4;
+const sameUrlSnapshotCount = {};
+// last captured content per tab, so an auto-snapshot whose HTML is byte-identical to the
+// previous one (a click that changed nothing) is not saved again
+const lastSnapshotHash = {};
+
+function _hashString(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16) + ':' + str.length;
+}
+
+/**
+ * [FIX] called when a recording starts. These maps are module-level, so they used to carry
+ * over between recordings: re-recording a page snapshotted in an EARLIER session skipped its
+ * first auto-snapshot as a "duplicate" (same bug class as script-capture's seen-URL set).
+ */
+export function resetSnapshotState() {
+  for (const m of [lastSnapshotTime, lastSnapshotUrl, sameUrlSnapshotCount, lastSnapshotHash]) {
+    for (const k of Object.keys(m)) delete m[k];
+  }
+}
+
+// [NEW] snapshot frames are also stored in the recording (frameDocuments), so they come out
+// in the JSON / Split export instead of only as separate .html downloads.
+function _storeSnapshotFrames(frames, tabId, reason) {
+  try {
+    const s = state;
+    if (!Array.isArray(s.frameDocuments)) s.frameDocuments = [];
+    const cap = CONFIG.MAX_FRAME_DOC_CHARS || 2 * 1024 * 1024;
+    for (const r of frames) {
+      const html = r.result.html;
+      const url = r.result.url;
+      if (!url || s.frameDocuments.some(d => d.url === url && d.size === html.length)) continue;
+      s.frameDocuments.push({
+        timestamp: Date.now(),
+        tabId,
+        frameId: r.frameId,
+        url,
+        isTop: r.frameId === 0,
+        reason,
+        size: html.length,
+        truncated: html.length > cap,
+        html: html.length > cap ? html.slice(0, cap) : html
+      });
+      if (s.frameDocuments.length > (CONFIG.MAX_FRAME_DOCS || 40)) s.frameDocuments.shift();
+    }
+    scheduleSave();
+  } catch (e) {
+    console.warn("[auto-snapshot] could not store frames in recording:", e && e.message);
+  }
+}
 
 // ═══ SCREENSHOT CAPTURE ═══
 export function captureScreenshot(tabId, callback) {
@@ -277,8 +337,9 @@ export function scheduleAutoSnapshot(tabId, delay = 1200, bypassCooldown = false
       return;
     }
 
-    if (!bypassCooldown && lastSnapshotUrl[tabId] && lastSnapshotUrl[tabId] === tab.url) {
-      console.log("[auto-snapshot] 🔁 Skipping duplicate snapshot - same URL as last capture:", tab.url);
+    if (!bypassCooldown && lastSnapshotUrl[tabId] && lastSnapshotUrl[tabId] === tab.url &&
+        (sameUrlSnapshotCount[tabId] || 0) >= SNAPSHOT_MAX_PER_URL) {
+      console.log("[auto-snapshot] 🔁 Skipping snapshot - already", SNAPSHOT_MAX_PER_URL, "captures of this URL:", tab.url);
       return;
     }
 
@@ -316,7 +377,7 @@ export function captureSnapshot(callback, specificTabId) {
     // starts, closes that window: anything arriving while this capture is still in flight now
     // correctly sees a fresh timestamp and gets cooldown-blocked, the way it was always meant to.
     lastSnapshotTime[targetTab.id] = Date.now();
-    lastSnapshotUrl[targetTab.id] = targetTab.url;
+    const isAuto = !!specificTabId && !callback;
 
     console.log("[auto-snapshot] capturing tab", targetTab.id, targetTab.url);
 
@@ -406,6 +467,22 @@ export function captureSnapshot(callback, specificTabId) {
               r.result.html
           )
           .join('\n\n');
+
+        // an automatic snapshot identical to the previous one adds nothing -- skip it
+        const contentHash = _hashString(combined);
+        if (isAuto && lastSnapshotHash[targetTab.id] === contentHash) {
+          console.log("[auto-snapshot] ⏭️ Skipping snapshot - page content unchanged since last capture");
+          return;
+        }
+        lastSnapshotHash[targetTab.id] = contentHash;
+        // count only snapshots actually saved toward the per-URL cap
+        if (lastSnapshotUrl[targetTab.id] === targetTab.url) {
+          sameUrlSnapshotCount[targetTab.id] = (sameUrlSnapshotCount[targetTab.id] || 0) + 1;
+        } else {
+          sameUrlSnapshotCount[targetTab.id] = 1;
+        }
+        lastSnapshotUrl[targetTab.id] = targetTab.url;
+        _storeSnapshotFrames(frames, targetTab.id, isAuto ? 'auto-snapshot' : 'snapshot');
 
         const fallbackNote = isTimeoutFallback
           ? "\n     NOTE: multi-frame capture timed out (a frame likely never finished loading -- e.g. a reCAPTCHA iframe); this is a main-frame-only fallback capture."

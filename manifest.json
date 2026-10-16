@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stream Recorder Pro",
-  "version": "4.3.1",
+  "version": "4.3.2",
   "minimum_chrome_version": "111",
   "description": "Reverse engineer streaming sites - capture APIs, streams, and generate Python extractors for Enigma2",
   "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },

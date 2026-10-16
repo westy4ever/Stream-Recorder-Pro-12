@@ -42,6 +42,36 @@ function safeDocstringText(s) {
 
 // ═══ MAIN EXPORT FUNCTIONS ═══
 
+// [NEW] error / bot-challenge pages are not site content. A real capture's Cloudflare 502 page
+// ranked ".cf-wrapper" as the top item-container selector (70%) -- pure noise.
+function isErrorOrChallengeHtml(html, status) {
+  if (typeof status === 'number' && status >= 400) return true;
+  if (typeof html !== 'string') return false;
+  return /cf-error-details|id="cf-wrapper"|class="cf-wrapper"|<title>[^<]*(?:Just a moment|Attention Required|\| \d{3}: )/i.test(html) ||
+         /challenges\.cloudflare\.com\/turnstile/i.test(html) && html.length < 20000;
+}
+
+// [NEW] frameDocuments (4.3.0+): live HTML of the top page and every iframe, captured from
+// the same page load as the API calls. Inline <script> blocks in it are where many players
+// keep per-load config/keys (e.g. window.__EM_PLAYER__), which never appear in scriptBodies
+// (those are only <script src> files). Returned in scriptBodies' shape so every existing
+// script analysis (constants, stream URLs) picks them up unchanged.
+function inlineScriptsFromFrameDocuments(frameDocuments) {
+  const out = [];
+  for (const doc of (frameDocuments || [])) {
+    if (!doc || typeof doc.html !== 'string' || !doc.url) continue;
+    const re = /<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi;
+    let m, i = 0;
+    while ((m = re.exec(doc.html)) !== null) {
+      const body = m[1].trim();
+      if (body.length < 40) continue;
+      if (/^\s*[{\[]/.test(body) && /application\/ld\+json/i.test(m[0])) continue; // JSON-LD metadata
+      out.push({ url: `${doc.url}#inline-${++i}`, status: 200, body, inline: true });
+    }
+  }
+  return out;
+}
+
 export function generatePythonExtractor(siteName, capturedData) {
   const result = generatePluginExtractor(siteName, capturedData);
   return result.code;
@@ -55,7 +85,9 @@ export function generateResolverCode(host, capturedData) {
   // generatePluginExtractor() -- this single-host generator is the most direct analog to the
   // real moviesapi.to case (one host, one resolver), so it gets the same treatment: scoped to
   // just the scripts this host itself loaded.
-  const scriptBodies = capturedData?.scriptBodies || s.scriptBodies || [];
+  const frameDocuments = capturedData?.frameDocuments || s.frameDocuments || [];
+  const scriptBodies = (capturedData?.scriptBodies || s.scriptBodies || [])
+    .concat(inlineScriptsFromFrameDocuments(frameDocuments));
 
   const hostRequests = networkLog.filter(entry => {
     try {
@@ -196,9 +228,11 @@ export function generatePluginExtractor(siteName, capturedData) {
   // app bundle -- exactly where a hardcoded key like moviesapi.to's x-player-key or a decrypt/
   // signing routine actually lives -- never surfaced in a generated extractor, even once it was
   // sitting right there in the recording.
-  const scriptBodies = capturedData?.scriptBodies || s.scriptBodies || [];
+  const frameDocuments = capturedData?.frameDocuments || s.frameDocuments || [];
+  const scriptBodies = (capturedData?.scriptBodies || s.scriptBodies || [])
+    .concat(inlineScriptsFromFrameDocuments(frameDocuments));
 
-  const analysis = analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies);
+  const analysis = analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies, frameDocuments);
 
   const code = generateFullPluginExtractor(siteName, analysis);
 
@@ -562,7 +596,7 @@ function extractDomainForSelectors(url) {
 // taking networkLog/xhrBodies/contentPipeline/actions as explicit
 // parameters (the same local variables analyzeCapturedData() already
 // has) instead of reading the global `state` object.
-function discoverSelectorsFromCapturedData(networkLog, xhrBodies, contentPipeline, actions) {
+function discoverSelectorsFromCapturedData(networkLog, xhrBodies, contentPipeline, actions, frameDocuments) {
   const selectors = {
     itemContainers: [],
     titles: [],
@@ -583,7 +617,7 @@ function discoverSelectorsFromCapturedData(networkLog, xhrBodies, contentPipelin
   for (const entry of networkLog) {
     if (entry.url && (entry.url.includes('/category/') || entry.url.includes('/movie/') || entry.url.includes('/watch/'))) {
       const body = xhrBodies.find(b => b.url === entry.url);
-      if (body && body.body && body.body.length > 1000) {
+      if (body && body.body && body.body.length > 1000 && !isErrorOrChallengeHtml(body.body, body.status)) {
         const htmlSelectors = extractSelectorsFromHTML(body.body);
         selectors.itemContainers.push(...htmlSelectors.itemContainers);
         selectors.titles.push(...htmlSelectors.titles);
@@ -623,7 +657,7 @@ function discoverSelectorsFromCapturedData(networkLog, xhrBodies, contentPipelin
           }
         }
       } catch (e) {
-        if (body.body.includes('<div') && body.body.includes('<a')) {
+        if (body.body.includes('<div') && body.body.includes('<a') && !isErrorOrChallengeHtml(body.body, body.status)) {
           const htmlSelectors = extractSelectorsFromHTML(body.body);
           selectors.itemContainers.push(...htmlSelectors.itemContainers);
           selectors.titles.push(...htmlSelectors.titles);
@@ -634,6 +668,27 @@ function discoverSelectorsFromCapturedData(networkLog, xhrBodies, contentPipelin
           selectors.links.push(...htmlSelectors.links);
         }
       }
+    }
+  }
+
+  // [NEW] the real listing/detail pages. Page HTML is a document request, which never lands
+  // in xhrBodies (fetch/XHR only), so for an ordinary server-rendered site selector discovery
+  // had almost no real page HTML to work from. Top frames only: iframes are players, whose
+  // markup would only add noise to listing-page selectors.
+  for (const doc of (frameDocuments || [])) {
+    if (!doc || !doc.isTop || typeof doc.html !== 'string' || doc.html.length < 1000) continue;
+    if (isErrorOrChallengeHtml(doc.html)) continue;
+    const htmlSelectors = extractSelectorsFromHTML(doc.html);
+    selectors.itemContainers.push(...htmlSelectors.itemContainers);
+    selectors.titles.push(...htmlSelectors.titles);
+    selectors.posters.push(...htmlSelectors.posters);
+    selectors.ratings.push(...htmlSelectors.ratings);
+    selectors.years.push(...htmlSelectors.years);
+    selectors.genres.push(...htmlSelectors.genres);
+    selectors.links.push(...htmlSelectors.links);
+    if (!selectors.samples.htmlSample) {
+      selectors.samples.htmlSample = doc.html.substring(0, 1000);
+      selectors.samples.urlSample = doc.url;
     }
   }
 
@@ -1275,6 +1330,35 @@ function discoverStreamResolversFromCapturedData(networkLog, xhrBodies, scriptBo
 // rather than re-implementing a second copy of the same regexes here. Only returns an entry
 // for a script where something was actually found, to avoid drowning the real finds in noise
 // from the 20-60+ small webpack/CSS-module shims a modern SPA can load per page.
+// [NEW] values that look like secret keys but are public constants built into every video
+// player: the DRM system IDs (a real vidcore.io capture flagged Widevine's as a "possible key").
+const KNOWN_NON_SECRET_HEX = new Set([
+  'edef8ba979d64acea3c827dcd51d21ed', // Widevine system ID
+  '9a04f07998404286ab92e65be0885f95', // PlayReady system ID
+  '94ce86fb07ff4f43adb893d2fa968ca2', // FairPlay system ID
+  '1077efecc0b24d02ace33c1e52e2fb4b', // W3C ClearKey system ID
+  'e2719d58a985b3c9781ab030af78d30e'  // ClearKey (alt)
+]);
+
+// [NEW] spec/docs/framework URLs that appear in every bundle and never matter for extraction
+// (a real capture listed w3.org, nextjs.org, react.dev, aomedia.org and ad-network URLs).
+const NOISE_URL_HOSTS = ['w3.org', 'nextjs.org', 'react.dev', 'reactjs.org', 'aomedia.org',
+  'schema.org', 'mozilla.org', 'developer.mozilla.org', 'github.com', 'npmjs.com',
+  'googleapis.com', 'gstatic.com', 'apple.com', 'microsoft.com', 'hlsjs.video-dev.org',
+  'video-dev.org', 'dashif.org', 'mpeg.org', 'ietf.org', 'whatwg.org', 'example.com'];
+function isNoiseUrl(u) {
+  try {
+    const host = new URL(u).hostname.toLowerCase();
+    if (!host || host.length < 4 || !host.includes('.')) return true;   // "http://n" etc.
+    if (NOISE_URL_HOSTS.some(h => host === h || host.endsWith('.' + h))) return true;
+    if (typeof isAdDomain === 'function' && isAdDomain(u)) return true;
+    if (/cpm|adnetwork|popads|propeller|adsterra|profitable/i.test(host)) return true;
+    return false;
+  } catch (e) {
+    return true;
+  }
+}
+
 function discoverStaticConstantsFromScriptBodies(scriptBodies) {
   const findings = [];
   for (const script of (scriptBodies || [])) {
@@ -1294,10 +1378,11 @@ function discoverStaticConstantsFromScriptBodies(scriptBodies) {
     // deliberately stays conservative rather than flooding results with false positives.
     const possibleKeys = Object.entries(result.extractedVariables || {})
       .filter(([, value]) => typeof value === 'string' && /^[a-f0-9]{24,}$/i.test(value))
+      .filter(([, value]) => !KNOWN_NON_SECRET_HEX.has(value.toLowerCase()))
       .map(([name, value]) => ({ name, value }));
 
     const apiEndpoints = (result.extractedAPIEndpoints || []).slice(0, 10);
-    const notableUrls = (result.extractedUrls || []).slice(0, 10);
+    const notableUrls = (result.extractedUrls || []).filter(u => !isNoiseUrl(u)).slice(0, 10);
 
     if (possibleKeys.length === 0 && apiEndpoints.length === 0 && notableUrls.length === 0) continue;
 
@@ -1475,8 +1560,9 @@ function formatRouteTreeForDisplay(tree, depth) {
   return output;
 }
 
-function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies) {
+function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies, frameDocuments) {
   scriptBodies = scriptBodies || [];
+  frameDocuments = frameDocuments || [];
   const analysis = {
     baseUrl: null,
     categories: [],
@@ -1545,13 +1631,17 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   }
 
   // Extract base URL
+  // [FIX] baseUrl used to be the host of whatever request happened to be FIRST in the log --
+  // fine when that was the page itself, but an ad, font or analytics request recorded first
+  // made the whole extractor point at the wrong site. Prefer the real top-level page
+  // (main_frame request, then a top-frame document), then fall back to the old behaviour.
+  const _origin = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? `${x.protocol}//${x.hostname}` : null; } catch (e) { return null; } };
+  const mainFrame = networkLog.find(e => e && e.type === 'main_frame' && _origin(e.url));
+  const topDoc = frameDocuments.find(d => d && d.isTop && _origin(d.url));
+  analysis.baseUrl = (mainFrame && _origin(mainFrame.url)) || (topDoc && _origin(topDoc.url)) || null;
   for (const entry of networkLog) {
-    try {
-      const url = new URL(entry.url);
-      if (!analysis.baseUrl) {
-        analysis.baseUrl = `${url.protocol}//${url.hostname}`;
-      }
-    } catch (e) {}
+    if (analysis.baseUrl) break;
+    analysis.baseUrl = _origin(entry && entry.url);
   }
 
   // Extract categories from actions
@@ -2110,7 +2200,7 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // heuristics this session built blind, without knowing this richer
   // engine already existed.
   analysis.discoveredSelectors = discoverSelectorsFromCapturedData(
-    networkLog, xhrBodies, contentPipeline, actions
+    networkLog, xhrBodies, contentPipeline, actions, frameDocuments
   );
 
   // [NEW] additive route-type classification, ported from
@@ -2208,7 +2298,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   let code = `# -*- coding: utf-8 -*-\n`;
   code += `"""\n`;
   code += `${siteName} Extractor for NovaPlay Media Center\n`;
-  code += `Auto-generated by Stream Recorder Pro v4.0.0\n`;
+  code += `Auto-generated by Stream Recorder Pro v${(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : '?'}\n`;
   code += `Generated: ${new Date().toISOString()}\n`;
   code += `\n`;
   code += `IMPORTANT: This extractor is a generated STARTING POINT, not a finished,\n`;
@@ -2472,7 +2562,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                log("${siteNameDQ}: Using cached category items")\n`;
   code += `                return self._cache[cache_key]\n`;
   code += `            \n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
+  code += `            html, final_url = fetch(url, referer=self.main_url, max_retries=2)\n`;
   code += `            if not html:\n`;
   code += `                return []\n`;
   code += `            \n`;
@@ -2586,10 +2676,10 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `            search_url = self.main_url + ${toPythonStringLiteral(analysis.searchEndpoint)}\n`;
     if (analysis.searchPattern === 'POST') {
       code += `            data = {"query": query, "page": page}\n`;
-      code += `            response, final_url = fetch(search_url, referer=self.main_url, post_data=data, retries=3)\n`;
+      code += `            response, final_url = fetch(search_url, referer=self.main_url, post_data=data, max_retries=2)\n`;
     } else {
       code += `            search_url = search_url + '?q=' + query + '&page=' + str(page)\n`;
-      code += `            response, final_url = fetch(search_url, referer=self.main_url, retries=3)\n`;
+      code += `            response, final_url = fetch(search_url, referer=self.main_url, max_retries=2)\n`;
     }
   } else {
     code += `            # TODO: Implement search\n`;
@@ -2649,7 +2739,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `                log("${siteNameDQ}: Using cached detail page")\n`;
   code += `                return self._cache[cache_key]\n`;
   code += `            \n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
+  code += `            html, final_url = fetch(url, referer=self.main_url, max_retries=2)\n`;
   code += `            if not html:\n`;
   code += `                return {}\n`;
   code += `            \n`;
@@ -3096,7 +3186,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            # (check the captured network log to see which hosts this site's servers really use --\n`;
   code += `            # do not assume streamruby/doodstream/etc. without checking).\n`;
   code += `            \n`;
-  code += `            html, final_url = fetch(url, referer=self.main_url, retries=3)\n`;
+  code += `            html, final_url = fetch(url, referer=self.main_url, max_retries=2)\n`;
   code += `            if html:\n`;
   code += `                stream = find_m3u8(html) or find_mp4(html)\n`;
   code += `                if stream:\n`;

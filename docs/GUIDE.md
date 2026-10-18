@@ -106,6 +106,7 @@ Export with **Split by section**, then attach only the files the job needs. Send
 |---|---|---|
 | A server doesn't play on the box but plays on PC | `networkLog`, `xhrBodies`, `frameDocuments` | Site, server name, movie |
 | A player that decrypts or signs its links | the three above + `scriptBodies` | Which server |
+| VidCore or VidFast stopped working | the newest files in `Downloads/StreamRecorder-VM/` | Which server |
 | A new site to add to NovaPlay | `networkLog`, `xhrBodies`, `frameDocuments`, `actions` | What you clicked through |
 | A server list or episodes appear only after a click | `frameDocuments` + `actions` | What you clicked |
 | A download link that fails | `networkLog`, `xhrBodies` | Which download button |
@@ -113,6 +114,16 @@ Export with **Split by section**, then attach only the files the job needs. Send
 Always add the **manifest** text, so the version and capture counts can be checked first. If the box's own test (`run_site_test.py`) was run, add its report too.
 
 You don't need to send snapshot `.html` files any more: snapshots are inside `frameDocuments`.
+
+### Player files saved automatically (VidCore, VidFast)
+
+Some players (VidCore, VidFast) hide their request code in a small program inside one of their script files. While you record, the extension spots that file and saves it on its own, in full, to `Downloads/StreamRecorder-VM/`, with no export needed:
+
+- `<site>_<file>.js`: the player file itself
+- `<site>_<file>_page.html`: the page that loaded it (it holds the token the player starts from)
+- `<site>_<file>_info.json`: where it came from and when
+
+Each file is saved once. When the site puts out a new version, the file name changes and it is saved again. So if VidCore or VidFast stops working in NovaPlay, record one film on that server and send the newest files from that folder.
 
 ## The other popup buttons
 

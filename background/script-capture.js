@@ -23,6 +23,7 @@
 // extension is debugging this browser" banner for the whole tab).
 import { state, scheduleSave } from './state.js';
 import { CONFIG } from './config.js';
+import { pendingDownloadFilenames } from './screenshot.js';
 
 // Scripts already captured this session, by URL -- avoids re-fetching (and re-storing)
 // the same webpack chunk every time a site's SPA router re-requests the same page.
@@ -141,11 +142,115 @@ export async function captureScriptBody(entry) {
     if (s.scriptBodies.length > CONFIG.MAX_SCRIPT_BODIES) s.scriptBodies.shift();
 
     scheduleSave();
+
+    // [NEW] player bundles with a hidden bytecode VM (VidCore / VidFast style) get saved
+    // in full as separate files, so a site rebuild can be fixed from this one file.
+    if (looksLikeBytecodeVM(text)) savePlayerFiles(entry, url, text);
   } catch (e) {
     _recordFailure(entry, entry && (entry.finalUrl || entry.url), 0, e && e.message);
     // Silent by design -- see function doc above. Left as a console.debug (not warn/error)
     // so it doesn't look like a real problem in the extension's own console during normal
     // use, while still being visible if someone's actively debugging this file.
     console.debug('[script-capture] skipped', entry && entry.url, e && e.message);
+  }
+}
+
+
+// ═══ PLAYER-VM AUTO-SAVE ═══
+// VidCore / VidFast (and anything built with the same obfuscator) hide their request
+// logic in a small stack machine inside one Next.js chunk:
+//   function*t(r,l,h){var f=r,u=[],p=[];function m(){if(f>=l)throw Error("");var e=f;return s[f++]^...}
+// NovaPlay's extractors/jsvm.py reads that chunk directly, so when the site rebuilds,
+// that single file (untruncated) plus the page that loaded it is all that's needed.
+// Saved to Downloads/StreamRecorder-VM/, once per chunk URL (the URL carries a content
+// hash, so a new build is a new URL and gets saved again).
+const VM_HEADER_RE = /function\*[\w$]+\([\w$]+,[\w$]+,[\w$]+\)\{(?:let [\w$]+=[\w$]+;)?var [\w$]+=[\w$]+,[\w$]+=\[\],[\w$]+=\[\];function [\w$]+\(\)\{if\([\w$]+>=[\w$]+\)throw Error\(""\)/;
+const VM_SAVED_KEY = 'vmSavedChunks';
+const _vmSavingNow = new Set();
+
+export function looksLikeBytecodeVM(text) {
+  return typeof text === 'string' && text.length > 50000 && text.indexOf('function*') !== -1 &&
+    text.indexOf('fromCharCode') !== -1 && VM_HEADER_RE.test(text);
+}
+
+function _vmFileBase(url) {
+  try {
+    const u = new URL(url);
+    const file = (u.pathname.split('/').pop() || 'chunk.js').replace(/[^\w.\-]/g, '_');
+    return u.hostname.replace(/[^\w.\-]/g, '_') + '_' + file.replace(/\.js$/, '');
+  } catch (e) {
+    return 'player_' + Date.now();
+  }
+}
+
+function _downloadText(content, filename, mimeType) {
+  return new Promise((resolve) => {
+    try {
+      const base64 = btoa(unescape(encodeURIComponent(content)));
+      chrome.downloads.download({ url: `data:${mimeType};base64,${base64}`, filename, saveAs: false, conflictAction: 'uniquify' }, (id) => {
+        if (chrome.runtime.lastError || !id) {
+          console.warn('[vm-save] download failed:', filename, chrome.runtime.lastError && chrome.runtime.lastError.message);
+          resolve(false);
+          return;
+        }
+        pendingDownloadFilenames[id] = filename;   // Brave ignores `filename` for data: URLs otherwise
+        resolve(true);
+      });
+    } catch (e) {
+      console.warn('[vm-save] could not save', filename, e && e.message);
+      resolve(false);
+    }
+  });
+}
+
+async function savePlayerFiles(entry, url, text) {
+  if (_vmSavingNow.has(url)) return;
+  _vmSavingNow.add(url);
+  try {
+    const stored = await chrome.storage.local.get(VM_SAVED_KEY);
+    const saved = (stored && stored[VM_SAVED_KEY]) || {};
+    if (saved[url]) return;
+    const base = 'StreamRecorder-VM/' + _vmFileBase(url);
+    const ok = await _downloadText(text, base + '.js', 'text/javascript');
+    if (!ok) return;
+    saved[url] = Date.now();
+    const keys = Object.keys(saved);
+    if (keys.length > 200) {          // keep the list small
+      keys.sort((a, b) => saved[a] - saved[b]).slice(0, keys.length - 200).forEach(k => delete saved[k]);
+    }
+    await chrome.storage.local.set({ [VM_SAVED_KEY]: saved });
+    console.log('[vm-save] saved player VM chunk', url);
+
+    // The page that loaded it carries the token the VM starts from ("en"). Its frame
+    // document is captured at DOMContentLoaded, usually a moment after this chunk,
+    // so wait a little before looking for it.
+    setTimeout(() => _savePlayerPage(entry, url, base), 8000);
+  } catch (e) {
+    console.warn('[vm-save] failed for', url, e && e.message);
+  } finally {
+    _vmSavingNow.delete(url);
+  }
+}
+
+function _savePlayerPage(entry, chunkUrl, base) {
+  try {
+    const origin = new URL(chunkUrl).origin;
+    const docs = (state.frameDocuments || []).filter(d => {
+      try { return new URL(d.url).origin === origin && (!entry.tabId || d.tabId === entry.tabId); } catch (e) { return false; }
+    });
+    const info = {
+      savedAt: new Date().toISOString(),
+      chunkUrl,
+      tabId: entry.tabId,
+      pageUrl: docs.length ? docs[docs.length - 1].url : null,
+      note: 'Saved by Stream Recorder Pro: player chunk with a bytecode VM. Send the .js (and the _page.html) to update NovaPlay.'
+    };
+    _downloadText(JSON.stringify(info, null, 2), base + '_info.json', 'application/json');
+    if (docs.length) {
+      const best = docs.reduce((a, b) => (b.size > a.size ? b : a));
+      _downloadText(best.html || '', base + '_page.html', 'text/html');
+    }
+  } catch (e) {
+    console.warn('[vm-save] page save failed', e && e.message);
   }
 }

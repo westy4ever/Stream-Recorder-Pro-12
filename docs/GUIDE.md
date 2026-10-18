@@ -4,7 +4,7 @@ _Last updated 2026-10-16_
 
 ## What it does
 
-Stream Recorder Pro (version 4.3.2) records everything a streaming site does in your browser while you use it, so a resolver or extractor can be written for NovaPlay from real evidence instead of guesses. You browse and play normally; it records in the background, then exports the recording as JSON files.
+Stream Recorder Pro (version 4.4.0) records everything a streaming site does in your browser while you use it, so a resolver or extractor can be written for NovaPlay from real evidence instead of guesses. You browse and play normally; it records in the background, then exports the recording as JSON files.
 
 | Section | What it holds | Why it matters |
 |---|---|---|
@@ -34,7 +34,7 @@ The extension runs unpacked from a folder on your PC, so every update is two ste
 
 1. Get the new files into the same folder: `git pull` in it, or download the ZIP again and copy its contents over the old files.
 2. Open `brave://extensions` and click the **reload** icon (circular arrow) on the Stream Recorder Pro card.
-3. Check the version on the card: it must show the new number (currently **4.3.2**).
+3. Check the version on the card: it must show the new number (currently **4.4.0**).
 
 Not sure which folder Brave uses? Click **Details** on the card and read **Loaded from**. Make sure only one Stream Recorder Pro is installed.
 
@@ -89,7 +89,7 @@ Pick what to export in the **Export** dropdown, then click **JSON** (best for an
 **The manifest file** (`stream_recording_MANIFEST_...txt`) lists every file and its size, and starts with three check lines:
 
 ```
-Extension version: 4.3.2
+Extension version: 4.4.0
 Scripts captured: 51 OK, 0 failed
 Page/iframe HTML captured: 6
 ```
@@ -160,7 +160,7 @@ Recording and exporting need only Start, Stop, Snapshot and the export buttons. 
 | No "Save as" window | Intended: files go to Downloads | Look in Downloads for `stream_recording_...` |
 | Exported JSON is huge | Long session with many pages | One short recording per job; use Split by section |
 | Solve CF never says solved | Challenge still showing after 30 s | Solve it in the tab it opens, then try again |
-| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.3.2 |
+| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.4.0 |
 
 ## What it can't capture
 

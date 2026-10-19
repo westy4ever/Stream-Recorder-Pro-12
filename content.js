@@ -989,6 +989,47 @@ document.addEventListener('submit', (event) => {
   }).catch(() => {});
 });
 
+// ═══ [NEW v4.5] SEARCH-BOX TYPING ═══
+// Single-page sites search as you type (no <form> submit), so the generator had no
+// way to tell which request was the real search. Only search-like boxes are
+// recorded -- never passwords, e-mails or other form fields.
+function isSearchBox(el) {
+  if (!el || el.tagName !== 'INPUT') return false;
+  const type = (el.getAttribute('type') || 'text').toLowerCase();
+  if (type === 'password' || type === 'email' || type === 'hidden' || type === 'tel') return false;
+  if (type === 'search') return true;
+  if (type !== 'text' && type !== '') return false;
+  const hint = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('role'),
+                el.className && String(el.className)].join(' ').toLowerCase();
+  return /search|query|keyword|find|\bq\b|بحث|ابحث/.test(hint);
+}
+let _searchTypeTimer = null;
+function reportSearchTyping(el) {
+  const value = (el.value || '').trim();
+  if (value.length < 2 || value.length > 120) return;
+  chrome.runtime.sendMessage({
+    type: "action",
+    actionType: "type",
+    selector: getSelector(el),
+    url: window.location.href,
+    value: value,
+    pageState: getPageState()
+  }).catch(() => {});
+}
+document.addEventListener('input', (event) => {
+  const el = event.target;
+  if (!isSearchBox(el)) return;
+  clearTimeout(_searchTypeTimer);
+  // after a short pause, like the site's own "search as you type"
+  _searchTypeTimer = setTimeout(() => reportSearchTyping(el), 700);
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && isSearchBox(event.target)) {
+    clearTimeout(_searchTypeTimer);
+    reportSearchTyping(event.target);
+  }
+}, true);
+
 // ═══ HISTORY PATCHING ═══
 const originalPushState = history.pushState;
 const originalReplaceState = history.replaceState;

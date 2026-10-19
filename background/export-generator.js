@@ -5,6 +5,10 @@ import { isArabicMovieSite, isYTSSite, isSaveFilesSite, isAdDomain } from './sit
 // js-deobfuscator.js's already-working extraction (URLs, variables, API endpoints) on
 // scriptBodies content rather than re-implementing a second copy of the same regexes here.
 import { deobfuscateJavaScript } from './js-deobfuscator.js';
+// [NEW v4.5] higher-level findings (Next.js data, TMDB ids, stream origin and its
+// decoder, real search, server names, trailer filtering, NovaPlay compatibility)
+import { isTrailerUrl, detectNextJs, detectTmdbSite, traceStreamOrigin, findRealSearch,
+         mapServerLabels, checkNovaPlayCompat } from './site-insights.js';
 
 // [FIX] captured category titles and URLs were embedded into generated Python source as
 // plain "..." string literals -- title got a partial escape (double-quotes only, no
@@ -315,6 +319,9 @@ function validateGeneratedCode(code) {
   if (tripleQuoteCount % 2 !== 0) {
     warnings.push('Found an odd number of triple-quote (""") markers -- likely an unclosed docstring.');
   }
+
+  // [NEW v4.5] (7) check against NovaPlay's real extractors/base.py and method signatures
+  for (const w of checkNovaPlayCompat(code)) warnings.push(w);
 
   if (/[:=]\s*(true|false)\s*[,\n]/.test(code)) {
     warnings.push(
@@ -1439,7 +1446,7 @@ function discoverAPIEndpointsFromCapturedData(networkLog) {
           // immediately preceded by "v" (an API version segment) from
           // the generic id-placeholder substitution, leaving every
           // other numeric id correctly normalized exactly as before.
-          pathPattern: url.pathname.replace(/(?<!v)\d+/g, '{id}').replace(/[a-f0-9]{32,}/g, '{hash}')
+          pathPattern: url.pathname.replace(/(^|\/)\d+(?=\/|\.|$)/g, '$1{id}').replace(/[a-f0-9]{32,}/g, '{hash}')  // [FIX v4.5] whole numeric segments only (a Next.js build id like PHsm1fHs... was mangled)
         });
       }
     } catch (e) { /* not a parseable absolute URL -- skip */ }
@@ -2251,6 +2258,39 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
     analysis.discoveredAPIEndpoints = discoveredAPIEndpoints;
   }
 
+  // ── [NEW v4.5] ──────────────────────────────────────────────────────────
+  // (3) a trailer is never the film: drop trailer URLs/hosts from every stream signal
+  const trailerUrls = [];
+  const keepNonTrailer = (u) => { if (isTrailerUrl(u)) { if (!trailerUrls.includes(u)) trailerUrls.push(u); return false; } return true; };
+  if (analysis.journeyStreamUrls) {
+    analysis.journeyStreamUrls = analysis.journeyStreamUrls.filter(keepNonTrailer);
+    analysis.journeyStreamSample = analysis.journeyStreamUrls[0] || null;
+  }
+  analysis.streamResolvers = (analysis.streamResolvers || []).filter(r => keepNonTrailer(r.sample));
+  analysis.streamSample = analysis.streamResolvers.length ? analysis.streamResolvers[0].sample : null;
+  if (analysis.allDetectedHosts) analysis.allDetectedHosts = analysis.allDetectedHosts.filter(h => !isTrailerUrl('https://' + h + '/'));
+  if (analysis.mirrorHostSample) analysis.mirrorHostSample = analysis.mirrorHostSample.filter(h => !isTrailerUrl('https://' + h + '/'));
+  analysis.hasMultipleMirrorHosts = (analysis.mirrorHostSample || []).length > 1;
+  if (analysis.perHostStreamInfo) analysis.perHostStreamInfo = analysis.perHostStreamInfo.filter(h => !isTrailerUrl('https://' + h.host + '/'));
+  analysis.trailerUrls = trailerUrls.slice(0, 5);
+  // (1) Next.js page data, (4) TMDB-numbered site
+  analysis.nextjs = detectNextJs(networkLog, xhrBodies, frameDocuments);
+  analysis.tmdbSite = detectTmdbSite(networkLog, actions, analysis.nextjs);
+  // (2) the request that produced the playlist (+ its setup call and decoder)
+  analysis.streamOrigin = traceStreamOrigin(networkLog, xhrBodies, scriptBodies);
+  // (5) the real search: the request that followed typing in the search box
+  analysis.realSearch = findRealSearch(actions, networkLog);
+  if (analysis.realSearch) {
+    analysis.searchEndpoint = analysis.realSearch.template;
+    analysis.searchPattern = analysis.realSearch.method;
+  } else if (analysis.searchEndpoint) {
+    // only a URL that happened to contain "search"/"find" -- not proof of a title search
+    analysis.searchGuessed = true;
+    if (/subtitle|caption|opensubtitles|track|analytics/i.test(analysis.searchEndpoint)) analysis.searchEndpoint = null;
+  }
+  // (6) server names in the player <-> the API paths they call
+  analysis.serverMap = mapServerLabels(networkLog, frameDocuments, xhrBodies);
+
   // [NEW] whole-site route tree overview -- see
   // discoverAllRoutesFromCapturedData's own comment for scope/intent.
   const allRoutes = discoverAllRoutesFromCapturedData(networkLog, actions);
@@ -2368,8 +2408,72 @@ function generateFullPluginExtractor(siteName, analysis) {
     }
     code += `\n`;
   }
-  code += `Once verified, place this file in the extractors/ folder and add to\n`;
-  code += `__init__.py:\n`;
+  // ── [NEW v4.5] findings that change how this site must be extracted ──
+  if (analysis.nextjs) {
+    const nx = analysis.nextjs;
+    code += `DETECTED: Next.js site -- page data is JSON, not HTML. Read it from:\n`;
+    code += `    <script id="__NEXT_DATA__"> in the page (props.pageProps), or\n`;
+    code += `    /_next/data/<buildId>/<page>.json   (buildId now: ${safeDocstringText(nx.buildId || '?')} -- it changes\n`;
+    code += `    with every site update, so read it from the home page each time; see _next_build_id())\n`;
+    if (nx.sections.length) {
+      code += `    home page lists (pageProps):\n`;
+      for (const sec of nx.sections.slice(0, 12)) {
+        const where = sec.sub ? `${sec.key}[name=${sec.sub.name}].${sec.sub.listKey}` : sec.key;
+        code += `        ${safeDocstringText(where)}  (${sec.count} items: ${safeDocstringText(sec.itemKeys.slice(0, 8).join(', '))})\n`;
+      }
+    }
+    if (nx.dataRoutes && nx.dataRoutes.length) {
+      code += `    data routes seen: ${safeDocstringText(nx.dataRoutes.slice(0, 8).join('  '))}\n`;
+    }
+    code += `\n`;
+  }
+  if (analysis.tmdbSite) {
+    const tm = analysis.tmdbSite;
+    code += `DETECTED: TMDB-numbered site -- titles are addressed by their TMDB id\n`;
+    code += `    movie: ${safeDocstringText(tm.moviePattern || '?')}   tv: ${safeDocstringText(tm.tvPattern || '?')}\n`;
+    for (const ev of tm.evidence) code += `    - ${safeDocstringText(ev)}\n`;
+    code += `    Build it like NovaPlay's sflix_pro.py / movy.py: lists, search and details from\n`;
+    code += `    TMDB (item URLs like "<site>_movie_<id>", "<site>_episode_<id>_<s>_<e>"), servers\n`;
+    code += `    built from the TMDB id -- no HTML scraping needed.\n\n`;
+  }
+  if (analysis.streamOrigin && analysis.streamOrigin.origin) {
+    const so = analysis.streamOrigin;
+    code += `DETECTED: where the playlist came from (traced through the recording):\n`;
+    code += `    playlist: ${safeDocstringText(so.playlistUrl.slice(0, 150))}\n`;
+    if (so.setup) {
+      code += `    1. setup call: ${so.setup.method} ${safeDocstringText(so.setup.url.slice(0, 150))}\n`;
+      code += `       reply: ${safeDocstringText(so.setup.bodySample)}\n`;
+      if (so.setup.reusedValue) code += `       (its value is sent again in the next call)\n`;
+    }
+    code += `    ${so.setup ? '2' : '1'}. stream API: ${so.origin.method || 'GET'} ${safeDocstringText(so.origin.url.slice(0, 220))}\n`;
+    if (so.origin.plain) {
+      code += `       its reply contains the playlist URL in plain text.\n`;
+    } else if (so.origin.encrypted) {
+      code += `       its reply is ENCRYPTED (${safeDocstringText(so.origin.bodySample.slice(0, 50))}...) -- port the\n`;
+      code += `       site's decoder; the script(s) that build this call are quoted in extract_stream().\n`;
+    }
+    code += `\n`;
+  }
+  if (analysis.serverMap) {
+    const sm = analysis.serverMap;
+    code += `DETECTED: player server names map to API paths:\n`;
+    code += `    ${safeDocstringText(sm.pattern)}\n`;
+    code += `    requested in the recording: ${safeDocstringText(sm.requested.join(', '))}\n`;
+    code += `    names shown in the player: ${safeDocstringText(sm.labels.join(', '))}\n\n`;
+  }
+  if (analysis.realSearch) {
+    code += `DETECTED: search -- typing "${safeDocstringText(analysis.realSearch.typed)}" in the site's search box sent:\n`;
+    code += `    ${analysis.realSearch.method} ${safeDocstringText(analysis.realSearch.template)}\n\n`;
+  } else {
+    code += `NOT FOUND: the site's search request. Record again and type a title in the\n`;
+    code += `site's search box (Stream Recorder Pro 4.5+ records what is typed there).\n\n`;
+  }
+  if (analysis.trailerUrls && analysis.trailerUrls.length) {
+    code += `IGNORED as trailers (never the film): ${safeDocstringText(analysis.trailerUrls.slice(0, 2).map(u => u.slice(0, 80)).join('  '))}\n\n`;
+  }
+  code += `Once verified, place this file in NovaPlay's extractors/ folder and register\n`;
+  code += `it in extractors/registry.py (import + a _SITE_REGISTRY entry + the\n`;
+  code += `_SEARCH_SITE_ORDER / _HOME_SITE_ORDER tuples):\n`;
   code += `    from .${safeName} import ${className}\n`;
   code += `"""\n\n`;
 
@@ -2388,7 +2492,9 @@ function generateFullPluginExtractor(siteName, analysis) {
   // without needing to touch the larger extraction blocks below.
   code += `HAS_BS4 = False  # this codebase is pure-regex; see extractors/*.py for the convention\n\n`;
   code += `from .base import BaseExtractor, fetch, fetch_json, find_m3u8, find_mp4, log\n`;
-  code += `from .base import _correct_stream_url, _extract_quality_from_streamruby_url\n\n\n`;
+  code += `from .base import _correct_stream_url\n`;
+  code += `from urllib.parse import quote\n`;
+  code += `BeautifulSoup = None  # bs4 is not installed on NovaPlay boxes; the regex branches run\n\n\n`;
 
   code += `class ${className}(BaseExtractor):\n`;
   code += `    """\n`;
@@ -2397,6 +2503,7 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `    """\n\n`;
 
   code += `    def __init__(self):\n`;
+  code += `        super().__init__()\n`;
   // [FIX] analysis.baseUrl is a real, captured protocol+hostname -- lower risk than a full
   // URL/title (hostnames are DNS-constrained), but embedded the same unescaped way as the
   // category fields below; made consistent with the same safe helper.
@@ -2408,6 +2515,44 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        self._site_label = self._site_name\n`;
   code += `        self._cache = {}  # Simple cache for performance\n\n`;
 
+  // [NEW v4.5] Next.js helpers: the build id changes on every site update
+  if (analysis.nextjs) {
+    code += `    def _next_data_props(self, html):\n`;
+    code += `        """props.pageProps from a page's <script id="__NEXT_DATA__">."""\n`;
+    code += `        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html or "", re.S)\n`;
+    code += `        if not m:\n`;
+    code += `            return {}, ""\n`;
+    code += `        try:\n`;
+    code += `            nd = json.loads(m.group(1))\n`;
+    code += `        except ValueError:\n`;
+    code += `            return {}, ""\n`;
+    code += `        return (nd.get("props") or {}).get("pageProps") or {}, nd.get("buildId") or ""\n\n`;
+    code += `    def _home_props(self):\n`;
+    code += `        if "home" not in self._cache:\n`;
+    code += `            html, _final = fetch(self.main_url + "/", referer=self.main_url + "/")\n`;
+    code += `            self._cache["home"] = self._next_data_props(html)\n`;
+    code += `        return self._cache["home"][0]\n\n`;
+    code += `    def _next_build_id(self):\n`;
+    code += `        self._home_props()\n`;
+    code += `        return self._cache["home"][1]\n\n`;
+    code += `    def _next_data(self, page_path):\n`;
+    code += `        """/_next/data/<buildId>/<page_path>.json, e.g. "en/movie/550" (pageProps)."""\n`;
+    code += `        bid = self._next_build_id()\n`;
+    code += `        if not bid:\n`;
+    code += `            return {}\n`;
+    code += `        data = fetch_json("{}/_next/data/{}/{}.json".format(self.main_url, bid, page_path.strip("/")),\n`;
+    code += `                          referer=self.main_url + "/") or {}\n`;
+    code += `        return data.get("pageProps") or {}\n\n`;
+    code += `    def _section_items(self, key, name=None, list_key=None):\n`;
+    code += `        val = self._home_props().get(key) or []\n`;
+    code += `        if name is not None:\n`;
+    code += `            for sec in val:\n`;
+    code += `                if isinstance(sec, dict) and (sec.get("name") == name or sec.get("title") == name):\n`;
+    code += `                    return sec.get(list_key) or []\n`;
+    code += `            return []\n`;
+    code += `        return val if isinstance(val, list) else []\n\n`;
+  }
+
   // ═══ get_categories ═══
   code += `    def get_categories(self, mtype="movie"):\n`;
   code += `        """\n`;
@@ -2418,6 +2563,14 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        """\n`;
   code += `        try:\n`;
   code += `            categories = []\n`;
+  if (analysis.nextjs && analysis.nextjs.sections.length) {
+    code += `            # home page lists, read from __NEXT_DATA__ (see the DETECTED note at the top)\n`;
+    for (const sec of analysis.nextjs.sections.slice(0, 15)) {
+      const id = sec.sub ? `next:${sec.key}:${sec.sub.name}:${sec.sub.listKey}` : `next:${sec.key}`;
+      const title = sec.sub ? (sec.sub.name || sec.key) : sec.key;
+      code += `            categories.append({"title": ${toPythonStringLiteral(title)}, "url": ${toPythonStringLiteral(id)}, "type": "category"})\n`;
+    }
+  }
   if (analysis.categories.length > 0) {
     for (const cat of analysis.categories.slice(0, 10)) {
       code += `            categories.append({\n`;
@@ -2444,6 +2597,22 @@ function generateFullPluginExtractor(siteName, analysis) {
 
   // ═══ get_category_items ═══
   code += `    def get_category_items(self, url, page=1):\n`;
+  if (analysis.nextjs && analysis.nextjs.sections.length) {
+    code += `        if url.startswith("next:"):\n`;
+    code += `            parts = url.split(":")\n`;
+    code += `            rows = self._section_items(parts[1], *(parts[2:4] if len(parts) >= 4 else (None, None)))\n`;
+    code += `            items = []\n`;
+    code += `            for r in rows:\n`;
+    code += `                if not isinstance(r, dict):\n`;
+    code += `                    continue\n`;
+    code += `                link = r.get("slug") or r.get("url") or ""\n`;
+    code += `                items.append({"title": r.get("title") or r.get("name") or "",\n`;
+    code += `                              "url": urljoin(self.main_url, link) if link else "",\n`;
+    code += `                              "poster": r.get("poster") or r.get("image") or "",\n`;
+    code += `                              "year": str(r.get("release_date") or r.get("year") or "")[:4],\n`;
+    code += `                              "type": "series" if str(r.get("mediaType") or r.get("type")) in ("tv", "series") else "movie"})\n`;
+    code += `            return items\n`;
+  }
   code += `        """\n`;
   code += `        Get items from a category page.\n`;
   if (analysis.paginationPatterns.length > 0) {
@@ -2673,12 +2842,25 @@ function generateFullPluginExtractor(siteName, analysis) {
   if (analysis.searchEndpoint) {
     // [FIX] analysis.searchEndpoint is a real, captured URL, embedded unescaped the same way
     // as the category fields fixed above.
-    code += `            search_url = self.main_url + ${toPythonStringLiteral(analysis.searchEndpoint)}\n`;
-    if (analysis.searchPattern === 'POST') {
+    const ep = analysis.searchEndpoint;
+    const abs = /^https?:/i.test(ep);
+    if (analysis.realSearch) {
+      code += `            # the request the site itself sent after typing in its search box\n`;
+      code += `            search_url = ${toPythonStringLiteral(ep)}.replace("{query}", quote(query))\n`;
+      code += `            response, final_url = fetch(search_url, referer=self.main_url + "/", max_retries=2)\n`;
+    } else {
+      code += `            # TODO: GUESSED -- this URL only contained the word "search"; confirm it really\n`;
+      code += `            # searches titles (record again and type in the site's search box)\n`;
+      code += abs ? `            search_url = ${toPythonStringLiteral(ep)}\n`
+                  : `            search_url = urljoin(self.main_url, ${toPythonStringLiteral(ep)})\n`;
+    }
+    if (analysis.realSearch) {
+      // done above
+    } else if (analysis.searchPattern === 'POST') {
       code += `            data = {"query": query, "page": page}\n`;
       code += `            response, final_url = fetch(search_url, referer=self.main_url, post_data=data, max_retries=2)\n`;
     } else {
-      code += `            search_url = search_url + '?q=' + query + '&page=' + str(page)\n`;
+      code += `            search_url = search_url + ('&' if '?' in search_url else '?') + 'q=' + quote(query) + '&page=' + str(page)\n`;
       code += `            response, final_url = fetch(search_url, referer=self.main_url, max_retries=2)\n`;
     }
   } else {
@@ -2699,6 +2881,12 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `\n`;
 
   // ═══ get_page ═══
+  if (analysis.serverMap) {
+    const sm = analysis.serverMap;
+    code += `    # [v4.5] the player's servers, in the order it lists them (from the recording)\n`;
+    code += `    SERVERS = ${JSON.stringify(sm.labels.map((l, i) => [l, sm.paths[i]]))}\n`;
+    code += `    SERVER_URL = ${toPythonStringLiteral(sm.pattern.split('?')[0])}  # {server} = the path name\n\n`;
+  }
   code += `    def get_page(self, url, m_type=None):\n`;
   code += `        """\n`;
   code += `        Get detail page data.\n`;
@@ -3130,6 +3318,22 @@ function generateFullPluginExtractor(siteName, analysis) {
   }
   code += `        """\n`;
   code += `        try:\n`;
+  if (analysis.streamOrigin && analysis.streamOrigin.origin) {
+    const so = analysis.streamOrigin;
+    const cmt = (t) => String(t).split('\n').map(l => `            # ${l}`).join('\n') + '\n';
+    code += cmt('STREAM ORIGIN (traced from the recording -- start here):');
+    if (so.setup) code += cmt(`1. ${so.setup.method} ${so.setup.url.slice(0, 160)}\n   -> ${so.setup.bodySample}`);
+    code += cmt(`${so.setup ? '2' : '1'}. ${so.origin.method || 'GET'} ${so.origin.url.slice(0, 260)}`);
+    code += cmt(so.origin.plain ? '   -> the reply contains the playlist URL' :
+                so.origin.encrypted ? `   -> ENCRYPTED reply (${so.origin.bodySample.slice(0, 40)}...)` : '   -> reply (see xhrBodies)');
+    code += cmt(`   -> playlist: ${so.playlistUrl.slice(0, 160)}`);
+    for (const h of (so.decoderHints || [])) {
+      code += cmt(`\nDecoder candidate in ${h.script} (around "${h.keyword}"):`);
+      const flat = h.snippet.replace(/\s+/g, ' ');
+      for (let i = 0; i < flat.length; i += 110) code += cmt('    ' + flat.slice(i, i + 110));
+    }
+    code += `            #\n`;
+  }
   code += `            log("${siteNameDQ}: Extracting stream from: {}".format(url[:100]))\n`;
   code += `            \n`;
   code += `            if '.m3u8' in url or '.mp4' in url:\n`;

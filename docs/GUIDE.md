@@ -4,7 +4,7 @@ _Last updated 2026-10-16_
 
 ## What it does
 
-Stream Recorder Pro (version 4.4.0) records everything a streaming site does in your browser while you use it, so a resolver or extractor can be written for NovaPlay from real evidence instead of guesses. You browse and play normally; it records in the background, then exports the recording as JSON files.
+Stream Recorder Pro (version 4.5.0) records everything a streaming site does in your browser while you use it, so a resolver or extractor can be written for NovaPlay from real evidence instead of guesses. You browse and play normally; it records in the background, then exports the recording as JSON files.
 
 | Section | What it holds | Why it matters |
 |---|---|---|
@@ -34,7 +34,7 @@ The extension runs unpacked from a folder on your PC, so every update is two ste
 
 1. Get the new files into the same folder: `git pull` in it, or download the ZIP again and copy its contents over the old files.
 2. Open `brave://extensions` and click the **reload** icon (circular arrow) on the Stream Recorder Pro card.
-3. Check the version on the card: it must show the new number (currently **4.4.0**).
+3. Check the version on the card: it must show the new number (currently **4.5.0**).
 
 Not sure which folder Brave uses? Click **Details** on the card and read **Loaded from**. Make sure only one Stream Recorder Pro is installed.
 
@@ -61,7 +61,7 @@ One recording per job keeps the files small and clear: one broken server, or one
 1. **Open a new, normal tab.** Not Incognito: extensions are off there by default.
 2. **Open the popup**: click the icon, or press `Ctrl+Shift+E`. Check **Record: Current Tab** and **Auto-snapshot** are on, and **XHR/Fetch only** is off.
 3. **Click Start** (or `Ctrl+Shift+R`). A red REC badge appears on the icon and a small indicator on the page.
-4. **Use the site normally in that tab.** For a server: open the movie, pick the server, press play. For a new site: homepage, a category, a movie page, Watch, and for series one season and one episode.
+4. **Use the site normally in that tab.** For a server: open the movie, pick the server, press play. For a new site: homepage, a category, **type a title in the site's search box**, a movie page, Watch, and for series one season and one episode. Typing in the search box lets the extractor generator find the site's real search request (only search boxes are recorded, never passwords or other fields).
 5. **Let the video really play for 10 to 15 seconds.** The stream requests only happen once it plays. If an ad opens a new tab, close it, come back and press play again.
 6. **Take a manual snapshot if needed** with **Snapshot** (`Ctrl+Shift+S`). Auto-snapshot already covers most clicks, so this is only for something you want to be sure is kept.
 7. **Check the counts in the popup.** The network count should have jumped when the video started. If it didn't, press play again.
@@ -89,7 +89,7 @@ Pick what to export in the **Export** dropdown, then click **JSON** (best for an
 **The manifest file** (`stream_recording_MANIFEST_...txt`) lists every file and its size, and starts with three check lines:
 
 ```
-Extension version: 4.4.0
+Extension version: 4.5.0
 Scripts captured: 51 OK, 0 failed
 Page/iframe HTML captured: 6
 ```
@@ -137,6 +137,7 @@ Recording and exporting need only Start, Stop, Snapshot and the export buttons. 
 | YTS, WeCima, SaveFiles | Site-specific scrapers for the open tab. Their parsing may be out of date for the current site layout, so treat the result as a hint |
 | Torrent API | Looks through captured replies for torrent data |
 | Gen Extractor, Full Extractor | Write a Python extractor for NovaPlay from the recording. It's a starting point: test it with `run_site_test.py` before using it |
+
 | Gen Resolver | Writes a resolver for one host you name |
 | Tests | Writes a Python test file for the generated extractor |
 | Import HTML Snapshot(s) | Loads saved `.html` snapshots back in for analysis |
@@ -145,6 +146,20 @@ Recording and exporting need only Start, Stop, Snapshot and the export buttons. 
 | Deobfuscate | Tries to unpack packed JavaScript (`eval(function(p,a,c,k,e,d)...`) |
 | Cookies, Sequence, Changes, Compare, Version, Magnets | Cookie use, request order, what changed between visits, two sites side by side, site version, magnet links |
 | Pop out, Minimize | Move the popup into its own window, or shrink it |
+
+### What the extractor generator reads (4.5.0)
+
+Gen Extractor / Full Extractor now look past the raw requests and write these findings at the top of the generated file:
+
+| Finding | What it means for the extractor |
+|---|---|
+| **Next.js site** | The page data is JSON in `__NEXT_DATA__` (or `/_next/data/<buildId>/…json`), not HTML. The generated file reads the home lists from it and fetches the build id from the home page each time, because it changes on every site update |
+| **TMDB-numbered site** | Titles are `/movie/<TMDB id>`, `/tv/<TMDB id>`: build it like NovaPlay's SFlix/Movy extractors (lists and search from TMDB) |
+| **Where the playlist came from** | The API call that produced the video playlist, plus a setup call before it (for example a `/seed` or token request). If the reply is encrypted, the script that builds the call is quoted in `extract_stream()` so the decoder can be ported |
+| **Server names → API paths** | Links the names the player shows (Miami, Boise…) to the requests they make (`/{server}/sources`) |
+| **Search** | The request the site sent after you typed in its search box. If you didn't type in it, the file says so instead of guessing from any URL containing "search" |
+| **Trailers ignored** | IMDb video, YouTube and `trailers.*` addresses are never offered as the film's stream |
+| **NovaPlay check** | The warnings list now flags imports NovaPlay's `extractors/base.py` doesn't have, `BeautifulSoup` use, broken URL joins and wrong method signatures |
 
 ## Troubleshooting
 
@@ -160,7 +175,7 @@ Recording and exporting need only Start, Stop, Snapshot and the export buttons. 
 | No "Save as" window | Intended: files go to Downloads | Look in Downloads for `stream_recording_...` |
 | Exported JSON is huge | Long session with many pages | One short recording per job; use Split by section |
 | Solve CF never says solved | Challenge still showing after 30 s | Solve it in the tab it opens, then try again |
-| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.4.0 |
+| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.5.0 |
 
 ## What it can't capture
 

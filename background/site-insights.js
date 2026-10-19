@@ -343,3 +343,40 @@ export function checkNovaPlayCompat(code) {
   }
   return warnings;
 }
+
+
+// ── TMDB sites: turn the traced stream API call into a per-server URL template ─
+// e.g. https://api.x/miami/sources?title=…&tmdbId=1148365&seed=… becomes
+//      base  https://api.x/{server}/sources
+//      params [["title","{title}"],["tmdbId","{tmdb_id}"], …]  (seed dropped: it
+//      comes from the setup call each time)
+export function buildServerTemplate(streamOrigin, serverMap) {
+  if (!streamOrigin || !streamOrigin.origin || !serverMap) return null;
+  let u;
+  try { u = new URL(streamOrigin.origin.url); } catch (e) { return null; }
+  const segs = u.pathname.split('/').filter(Boolean);
+  if (!segs.length || !serverMap.requested.map(x => x.toLowerCase()).includes(segs[0].toLowerCase())) return null;
+  const base = u.origin + '/{server}/' + segs.slice(1).join('/');
+  const reused = streamOrigin.setup && streamOrigin.setup.reusedValue;
+  const params = [];
+  let tmdbValue = null, titleEncodings = 1, setupParam = null;
+  for (const [k, v] of u.searchParams) {
+    if (reused && v === reused) { setupParam = k; continue; }
+    let tpl = v;
+    if (/tmdb/i.test(k)) { tpl = '{tmdb_id}'; tmdbValue = v; }
+    else if (/imdb/i.test(k)) tpl = '{imdb_id}';
+    else if (/^year$|release.?year/i.test(k)) tpl = '{year}';
+    else if (/title|^name$/i.test(k)) { tpl = '{title}'; if (/%[0-9A-F]{2}/i.test(v)) titleEncodings = 2; }
+    else if (/media.?type|^type$/i.test(k) && /^(movie|tv|series|show)$/i.test(v)) tpl = '{media_type}';
+    else if (/season/i.test(k)) tpl = '{season}';
+    else if (/episode/i.test(k)) tpl = '{episode}';
+    params.push([k, tpl]);
+  }
+  let setupUrl = null;
+  if (streamOrigin.setup && tmdbValue) {
+    setupUrl = streamOrigin.setup.url.split(tmdbValue).join('{tmdb_id}');
+  }
+  const setupKey = reused ? (/"([A-Za-z_]+)"\s*:\s*"[^"]*"/.exec(streamOrigin.setup.bodySample || '') || [])[1] : null;
+  return { base, params, titleEncodings, setupParam, setupUrl, setupKey,
+           encrypted: !!streamOrigin.origin.encrypted };
+}

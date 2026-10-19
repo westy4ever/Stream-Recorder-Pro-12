@@ -8,7 +8,7 @@ import { deobfuscateJavaScript } from './js-deobfuscator.js';
 // [NEW v4.5] higher-level findings (Next.js data, TMDB ids, stream origin and its
 // decoder, real search, server names, trailer filtering, NovaPlay compatibility)
 import { isTrailerUrl, detectNextJs, detectTmdbSite, traceStreamOrigin, findRealSearch,
-         mapServerLabels, checkNovaPlayCompat } from './site-insights.js';
+         mapServerLabels, checkNovaPlayCompat, buildServerTemplate } from './site-insights.js';
 
 // [FIX] captured category titles and URLs were embedded into generated Python source as
 // plain "..." string literals -- title got a partial escape (double-quotes only, no
@@ -2290,6 +2290,7 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   }
   // (6) server names in the player <-> the API paths they call
   analysis.serverMap = mapServerLabels(networkLog, frameDocuments, xhrBodies);
+  analysis.serverTemplate = buildServerTemplate(analysis.streamOrigin, analysis.serverMap);
 
   // [NEW] whole-site route tree overview -- see
   // discoverAllRoutesFromCapturedData's own comment for scope/intent.
@@ -2543,6 +2544,15 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `        data = fetch_json("{}/_next/data/{}/{}.json".format(self.main_url, bid, page_path.strip("/")),\n`;
     code += `                          referer=self.main_url + "/") or {}\n`;
     code += `        return data.get("pageProps") or {}\n\n`;
+    code += `    @staticmethod\n`;
+    code += `    def _plain_image(url):\n`;
+    code += `        """image proxies like wsrv.nl serve webp, which the box can't show:\n`;
+    code += `        use the original image they wrap"""\n`;
+    code += `        m = re.search(r"[?&]url=([^&]+)", url or "")\n`;
+    code += `        if m and "wsrv.nl" in url:\n`;
+    code += `            from urllib.parse import unquote\n`;
+    code += `            return unquote(m.group(1))\n`;
+    code += `        return url\n\n`;
     code += `    def _section_items(self, key, name=None, list_key=None):\n`;
     code += `        val = self._home_props().get(key) or []\n`;
     code += `        if name is not None:\n`;
@@ -2551,6 +2561,128 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `                    return sec.get(list_key) or []\n`;
     code += `            return []\n`;
     code += `        return val if isinstance(val, list) else []\n\n`;
+  }
+
+
+  // [NEW v4.5] TMDB-numbered site: lists, search and detail pages from TMDB,
+  // one server entry per player server name (built from the traced API call)
+  const tm = analysis.tmdbSite;
+  const st = analysis.serverTemplate;
+  const pfx = safeName + '_';
+  if (tm) {
+    code += `    # ── TMDB mode (generated: this site addresses titles by TMDB id) ──\n`;
+    code += `    TMDB_PREFIX = ${toPythonStringLiteral(pfx)}\n`;
+    code += `    _TMDB_PUBLIC_KEY = "31eb6ae13f030d2e334cdd978cfc72b7"  # NovaPlay's SFlix key; the tmdb_api_key setting wins\n\n`;
+    code += `    def _tmdb(self, path, params=None):\n`;
+    code += `        key = self._TMDB_PUBLIC_KEY\n`;
+    code += `        try:\n`;
+    code += `            from plugin_state import _get_config\n`;
+    code += `            key = (_get_config("tmdb_api_key", "") or "").strip() or key\n`;
+    code += `        except Exception:\n`;
+    code += `            pass\n`;
+    code += `        q = {"api_key": key, "language": "en-US"}\n`;
+    code += `        q.update(params or {})\n`;
+    code += `        from urllib.parse import urlencode\n`;
+    code += `        return fetch_json("https://api.themoviedb.org/3{}?{}".format(path, urlencode(q))) or {}\n\n`;
+    code += `    @staticmethod\n`;
+    code += `    def _tmdb_poster(p):\n`;
+    code += `        return "https://image.tmdb.org/t/p/w342" + p if p else ""\n\n`;
+    code += `    def _tmdb_item(self, r, kind=None):\n`;
+    code += `        kind = kind or ("tv" if r.get("media_type") == "tv" or r.get("first_air_date") else "movie")\n`;
+    code += `        return {"title": r.get("title") or r.get("name") or "",\n`;
+    code += `                "poster": self._tmdb_poster(r.get("poster_path")),\n`;
+    code += `                "url": "{}{}_{}".format(self.TMDB_PREFIX, kind, r.get("id")),\n`;
+    code += `                "type": "series" if kind == "tv" else "movie",\n`;
+    code += `                "year": (r.get("release_date") or r.get("first_air_date") or "")[:4],\n`;
+    code += `                "rating": "{:.1f}".format(float(r.get("vote_average") or 0)) if r.get("vote_average") else ""}\n\n`;
+    code += `    def _tmdb_url_from_path(self, link):\n`;
+    code += `        """the site's own /movie/<id> or /tv/<id> link -> this extractor's item url"""\n`;
+    code += `        m = re.search(r"/(movies?|tv|series|shows?)/(\\d+)", link or "")\n`;
+    code += `        if not m:\n`;
+    code += `            return urljoin(self.main_url, link or "")\n`;
+    code += `        return "{}{}_{}".format(self.TMDB_PREFIX, "movie" if m.group(1).startswith("movie") else "tv", m.group(2))\n\n`;
+    code += `    _TMDB_LISTS = [\n`;
+    code += `        ("Trending Movies", "/trending/movie/week", "movie"),\n`;
+    code += `        ("Popular Movies", "/movie/popular", "movie"),\n`;
+    code += `        ("Top Rated Movies", "/movie/top_rated", "movie"),\n`;
+    code += `        ("Trending Series", "/trending/tv/week", "tv"),\n`;
+    code += `        ("Popular Series", "/tv/popular", "tv"),\n`;
+    code += `    ]\n\n`;
+    code += `    def _tmdb_list(self, url, page):\n`;
+    code += `        m = re.search(r"_page_(\\d+)$", url)\n`;
+    code += `        if m:  # NovaPlay opens "next page" rows by their url, so the page rides in it\n`;
+    code += `            page, url = int(m.group(1)), url[:m.start()]\n`;
+    code += `        idx = int(url.rsplit("_", 1)[1])\n`;
+    code += `        _title, path, kind = self._TMDB_LISTS[idx]\n`;
+    code += `        data = self._tmdb(path, {"page": page})\n`;
+    code += `        items = [self._tmdb_item(r, kind) for r in data.get("results") or []]\n`;
+    code += `        if page < int(data.get("total_pages") or 1):\n`;
+    code += `            items.append({"title": "➡️ Page {} (Next)".format(page + 1), "url": "{}_page_{}".format(url, page + 1), "type": "category"})\n`;
+    code += `        return items\n\n`;
+    // servers
+    code += `    def _servers_for(self, tmdb_id, title, year, imdb_id="", season=None, episode=None):\n`;
+    if (st) {
+      code += `        """One entry per server the site's player lists (SERVERS), each calling\n`;
+      code += `        the site's own stream API the way the recording showed."""\n`;
+      code += `        from urllib.parse import urlencode\n`;
+      code += st.titleEncodings > 1
+        ? `        t = quote(title or "", safe="")  # the site sends the title encoded twice\n`
+        : `        t = title or ""\n`;
+      code += `        values = {"{tmdb_id}": str(tmdb_id), "{imdb_id}": imdb_id or "", "{year}": str(year or ""),\n`;
+      code += `                  "{title}": t, "{media_type}": "tv" if season else "movie",\n`;
+      code += `                  "{season}": str(season or 1), "{episode}": str(episode or 1)}\n`;
+      code += `        q = urlencode([(k, values.get(v, v)) for k, v in self.SERVER_PARAMS])\n`;
+      code += `        return [{"name": "{} {}".format(${toPythonStringLiteral(siteName)}, label),\n`;
+      code += `                 "url": self.SERVER_URL.replace("{server}", path) + "?" + q, "quality": "HD"}\n`;
+      code += `                for label, path in self.SERVERS]\n\n`;
+    } else {
+      code += `        # TODO: no server API was traced in the recording -- the TMDB embed servers\n`;
+      code += `        # NovaPlay already resolves are a safe start (same list as sflix_pro.py)\n`;
+      code += `        if season:\n`;
+      code += `            return [{"name": "VidSrc-Embed", "url": "https://vidsrc-embed.ru/embed/tv/{}/{}/{}".format(tmdb_id, season, episode), "quality": "HD"},\n`;
+      code += `                    {"name": "VidFast", "url": "https://vidfast.vc/tv/{}/{}/{}".format(tmdb_id, season, episode), "quality": "HD"}]\n`;
+      code += `        return [{"name": "VidSrc-Embed", "url": "https://vidsrc-embed.ru/embed/movie/{}".format(tmdb_id), "quality": "HD"},\n`;
+      code += `                {"name": "EmbedMaster", "url": "https://embedmaster.link/movie/{}".format(tmdb_id), "quality": "HD"},\n`;
+      code += `                {"name": "VidFast", "url": "https://vidfast.vc/movie/{}?autoPlay=true".format(tmdb_id), "quality": "HD"}]\n\n`;
+    }
+    // detail page
+    code += `    def _tmdb_page(self, url):\n`;
+    code += `        rest = url[len(self.TMDB_PREFIX):]\n`;
+    code += `        kind, _, ident = rest.partition("_")\n`;
+    code += `        if kind == "movie":\n`;
+    code += `            d = self._tmdb("/movie/{}".format(ident))\n`;
+    code += `            title, year = d.get("title") or "", (d.get("release_date") or "")[:4]\n`;
+    code += `            return {"title": title, "plot": d.get("overview") or "", "poster": self._tmdb_poster(d.get("poster_path")),\n`;
+    code += `                    "year": year, "rating": "{:.1f}".format(float(d.get("vote_average") or 0)) if d.get("vote_average") else "",\n`;
+    code += `                    "genres": ", ".join(g.get("name", "") for g in d.get("genres") or []),\n`;
+    code += `                    "type": "movie", "items": [],\n`;
+    code += `                    "servers": self._servers_for(ident, title, year, d.get("imdb_id") or "")}\n`;
+    code += `        if kind == "tv":\n`;
+    code += `            d = self._tmdb("/tv/{}".format(ident))\n`;
+    code += `            seasons = [{"title": s.get("name") or "Season {}".format(s.get("season_number")),\n`;
+    code += `                        "url": "{}season_{}_{}".format(self.TMDB_PREFIX, ident, s.get("season_number")), "type": "season"}\n`;
+    code += `                       for s in d.get("seasons") or [] if s.get("season_number")]\n`;
+    code += `            return {"title": d.get("name") or "", "plot": d.get("overview") or "", "poster": self._tmdb_poster(d.get("poster_path")),\n`;
+    code += `                    "year": (d.get("first_air_date") or "")[:4], "type": "series", "servers": [], "items": seasons,\n`;
+    code += `                    "genres": ", ".join(g.get("name", "") for g in d.get("genres") or [])}\n`;
+    code += `        if kind == "season":\n`;
+    code += `            tid, sn = ident.split("_")\n`;
+    code += `            d = self._tmdb("/tv/{}/season/{}".format(tid, sn))\n`;
+    code += `            eps = [{"title": "S{:02d}E{:02d}: {}".format(int(sn), e.get("episode_number"), e.get("name") or ""),\n`;
+    code += `                    "url": "{}episode_{}_{}_{}".format(self.TMDB_PREFIX, tid, sn, e.get("episode_number")), "type": "episode"}\n`;
+    code += `                   for e in d.get("episodes") or []]\n`;
+    code += `            return {"title": d.get("name") or "", "plot": d.get("overview") or "", "poster": self._tmdb_poster(d.get("poster_path")),\n`;
+    code += `                    "type": "season", "servers": [], "items": eps}\n`;
+    code += `        if kind == "episode":\n`;
+    code += `            tid, sn, en = ident.split("_")\n`;
+    code += `            show = self._tmdb("/tv/{}".format(tid), {"append_to_response": "external_ids"})\n`;
+    code += `            e = self._tmdb("/tv/{}/season/{}/episode/{}".format(tid, sn, en))\n`;
+    code += `            return {"title": "S{:02d}E{:02d}: {}".format(int(sn), int(en), e.get("name") or ""),\n`;
+    code += `                    "plot": e.get("overview") or "", "poster": self._tmdb_poster(e.get("still_path")),\n`;
+    code += `                    "type": "episode", "items": [],\n`;
+    code += `                    "servers": self._servers_for(tid, show.get("name") or "", (show.get("first_air_date") or "")[:4],\n`;
+    code += `                                                 (show.get("external_ids") or {}).get("imdb_id") or "", sn, en)}\n`;
+    code += `        return None\n\n`;
   }
 
   // ═══ get_categories ═══
@@ -2563,6 +2695,11 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `        """\n`;
   code += `        try:\n`;
   code += `            categories = []\n`;
+  if (analysis.tmdbSite) {
+    code += `            # TMDB lists (this site addresses titles by TMDB id)\n`;
+    code += `            for i, (title, _path, _kind) in enumerate(self._TMDB_LISTS):\n`;
+    code += `                categories.append({"title": title, "url": "{}list_{}".format(self.TMDB_PREFIX, i), "type": "category"})\n`;
+  }
   if (analysis.nextjs && analysis.nextjs.sections.length) {
     code += `            # home page lists, read from __NEXT_DATA__ (see the DETECTED note at the top)\n`;
     for (const sec of analysis.nextjs.sections.slice(0, 15)) {
@@ -2597,6 +2734,10 @@ function generateFullPluginExtractor(siteName, analysis) {
 
   // ═══ get_category_items ═══
   code += `    def get_category_items(self, url, page=1):\n`;
+  if (analysis.tmdbSite) {
+    code += `        if url.startswith(self.TMDB_PREFIX + "list_"):\n`;
+    code += `            return self._tmdb_list(url, page)\n`;
+  }
   if (analysis.nextjs && analysis.nextjs.sections.length) {
     code += `        if url.startswith("next:"):\n`;
     code += `            parts = url.split(":")\n`;
@@ -2607,8 +2748,10 @@ function generateFullPluginExtractor(siteName, analysis) {
     code += `                    continue\n`;
     code += `                link = r.get("slug") or r.get("url") or ""\n`;
     code += `                items.append({"title": r.get("title") or r.get("name") or "",\n`;
-    code += `                              "url": urljoin(self.main_url, link) if link else "",\n`;
-    code += `                              "poster": r.get("poster") or r.get("image") or "",\n`;
+    code += analysis.tmdbSite
+      ? `                              "url": self._tmdb_url_from_path(link),\n`
+      : `                              "url": urljoin(self.main_url, link) if link else "",\n`;
+    code += `                              "poster": self._plain_image(r.get("poster") or r.get("image") or ""),\n`;
     code += `                              "year": str(r.get("release_date") or r.get("year") or "")[:4],\n`;
     code += `                              "type": "series" if str(r.get("mediaType") or r.get("type")) in ("tv", "series") else "movie"})\n`;
     code += `            return items\n`;
@@ -2832,6 +2975,12 @@ function generateFullPluginExtractor(siteName, analysis) {
 
   // ═══ search ═══
   code += `    def search(self, query, page=1):\n`;
+  if (analysis.tmdbSite) {
+    code += `        found = [self._tmdb_item(r) for r in (self._tmdb("/search/multi", {"query": query, "page": page}).get("results") or [])\n`;
+    code += `                 if r.get("media_type") in ("movie", "tv")]\n`;
+    code += `        if found:\n`;
+    code += `            return found\n`;
+  }
   code += `        """\n`;
   code += `        Search for content on ${siteName}.\n`;
   if (analysis.searchEndpoint) {
@@ -2885,9 +3034,24 @@ function generateFullPluginExtractor(siteName, analysis) {
     const sm = analysis.serverMap;
     code += `    # [v4.5] the player's servers, in the order it lists them (from the recording)\n`;
     code += `    SERVERS = ${JSON.stringify(sm.labels.map((l, i) => [l, sm.paths[i]]))}\n`;
-    code += `    SERVER_URL = ${toPythonStringLiteral(sm.pattern.split('?')[0])}  # {server} = the path name\n\n`;
+    code += `    SERVER_URL = ${toPythonStringLiteral(analysis.serverTemplate ? analysis.serverTemplate.base : sm.pattern.split('?')[0])}  # {server} = the path name\n`;
+    if (analysis.serverTemplate) {
+      code += `    # query of the traced call; {..} are filled per title in _servers_for()\n`;
+      code += `    SERVER_PARAMS = ${JSON.stringify(analysis.serverTemplate.params)}\n`;
+      if (analysis.serverTemplate.setupUrl) {
+        code += `    # setup call made first; its "${analysis.serverTemplate.setupKey || 'value'}" goes into "${analysis.serverTemplate.setupParam}"\n`;
+        code += `    SETUP_URL = ${toPythonStringLiteral(analysis.serverTemplate.setupUrl)}\n`;
+        code += `    SETUP_KEY = ${toPythonStringLiteral(analysis.serverTemplate.setupKey || '')}\n`;
+        code += `    SETUP_PARAM = ${toPythonStringLiteral(analysis.serverTemplate.setupParam || '')}\n`;
+      }
+    }
+    code += `\n`;
   }
   code += `    def get_page(self, url, m_type=None):\n`;
+  if (analysis.tmdbSite) {
+    code += `        if url.startswith(self.TMDB_PREFIX):\n`;
+    code += `            return self._tmdb_page(url)\n`;
+  }
   code += `        """\n`;
   code += `        Get detail page data.\n`;
   if (analysis.detailPatterns.length > 0) {
@@ -3248,6 +3412,13 @@ function generateFullPluginExtractor(siteName, analysis) {
   // (and buggy) copies per-site is exactly how that bug would have silently come back.
   // This now points at the real shared resolvers instead of re-inventing them.
   code += `    def extract_stream(self, url):\n`;
+  if (analysis.tmdbSite && analysis.serverTemplate) {
+    const stt = analysis.serverTemplate;
+    let host = '';
+    try { host = new URL(stt.base.replace('{server}', 'x')).hostname; } catch (e) {}
+    code += `        if ${toPythonStringLiteral(host)} in url:\n`;
+    code += `            return self._extract_own_server(url)\n`;
+  }
   code += `        """\n`;
   code += `        Extract stream URL from a server URL.\n`;
   if (analysis.streamResolvers.length > 0) {
@@ -3408,6 +3579,40 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `            log("${siteNameDQ}: Extract stream error: {}".format(e))\n`;
   code += `            return None, "", url, []\n`;
   code += `\n`;
+
+  if (analysis.tmdbSite && analysis.serverTemplate) {
+    const stt = analysis.serverTemplate;
+    code += `    def _extract_own_server(self, url):\n`;
+    code += `        """The site's own server API (SERVERS) -- the steps traced in the recording."""\n`;
+    code += `        from urllib.parse import parse_qs, urlparse as _up\n`;
+    code += `        hdr = {"Origin": self.main_url.rstrip("/"), "Referer": self.main_url.rstrip("/") + "/"}\n`;
+    if (stt.setupUrl) {
+      code += `        tmdb_id = ""\n`;
+      code += `        for k, v in parse_qs(_up(url).query).items():\n`;
+      code += `            if "tmdb" in k.lower():\n`;
+      code += `                tmdb_id = v[0]\n`;
+      code += `        setup = fetch_json(self.SETUP_URL.replace("{tmdb_id}", tmdb_id), extra_headers=hdr) or {}\n`;
+      code += `        value = setup.get(self.SETUP_KEY) if isinstance(setup, dict) else None\n`;
+      code += `        if not value:\n`;
+      code += `            log("${siteNameDQ}: setup call gave no {}".format(self.SETUP_KEY))\n`;
+      code += `            return None, "", url, []\n`;
+      code += `        url = url + "&" + self.SETUP_PARAM + "=" + quote(str(value), safe="")\n`;
+    }
+    code += `        text, _final = fetch(url, referer=self.main_url.rstrip("/") + "/", extra_headers=hdr)\n`;
+    code += `        text = (text or "").strip()\n`;
+    if (stt.encrypted) {
+      code += `        if text and not text.startswith(("{", "[")):\n`;
+      code += `            # TODO: the reply is ENCRYPTED -- port the decoder quoted in extract_stream()\n`;
+      code += `            # (see NovaPlay's extractors/movy_api.py decrypt() for a finished example)\n`;
+      code += `            log("${siteNameDQ}: encrypted reply, decoder not ported yet")\n`;
+      code += `            return None, "", url, []\n`;
+    }
+    code += `        stream = find_m3u8(text) or find_mp4(text)\n`;
+    code += `        if stream:\n`;
+    code += `            stream = stream.replace("\\\\/", "/")\n`;
+    code += `            return _correct_stream_url(stream) + "|Referer=" + hdr["Referer"] + "&Origin=" + hdr["Origin"], "HD", url, []\n`;
+    code += `        return None, "", url, []\n\n`;
+  }
 
   // ═══ Metadata ═══
   code += `\n# ─── Export Metadata ────────────────────────────────────────────────────────\n`;

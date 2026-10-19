@@ -154,7 +154,7 @@ Gen Extractor / Full Extractor now look past the raw requests and write these fi
 | Finding | What it means for the extractor |
 |---|---|
 | **Next.js site** | The page data is JSON in `__NEXT_DATA__` (or `/_next/data/<buildId>/…json`), not HTML. The generated file reads the home lists from it and fetches the build id from the home page each time, because it changes on every site update |
-| **TMDB-numbered site** | Titles are `/movie/<TMDB id>`, `/tv/<TMDB id>`: build it like NovaPlay's SFlix/Movy extractors (lists and search from TMDB) |
+| **TMDB-numbered site** | Titles are `/movie/<TMDB id>`, `/tv/<TMDB id>`. The generated file then works in TMDB mode: TMDB lists (trending, popular, top rated) and search, movie / series / season / episode pages from TMDB, and **one server entry per server name the player shows**, each calling the site's own stream API the way the recording did (with the setup call first, if there was one). If no stream API was traced it starts with the TMDB embed servers NovaPlay already plays. An encrypted reply still needs its decoder ported by hand |
 | **Where the playlist came from** | The API call that produced the video playlist, plus a setup call before it (for example a `/seed` or token request). If the reply is encrypted, the script that builds the call is quoted in `extract_stream()` so the decoder can be ported |
 | **Server names → API paths** | Links the names the player shows (Miami, Boise…) to the requests they make (`/{server}/sources`) |
 | **Search** | The request the site sent after you typed in its search box. If you didn't type in it, the file says so instead of guessing from any URL containing "search" |

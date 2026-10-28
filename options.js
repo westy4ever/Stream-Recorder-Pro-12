@@ -9,8 +9,9 @@ function loadSettings() {
     'defaultRecordingMode', 'defaultFilterMode', 'autoSnapshotDefault',
     'maxBodySize', 'maxScreenshots', 'allowedDomains', 'blockedDomains',
     'defaultSiteName', 'includeComments', 'includeTypeHints', 'exportFormat',
-    'browserProxy', 'tmdbApiKey', 'torrserverUrl', 'captureDownloadsOnly'
+    'browserProxy', 'tmdbApiKey', 'torrserverUrl', 'captureDownloadsOnly', 'reloadOnStart'
   ], (result) => {
+    document.getElementById('reloadOnStart').checked = result.reloadOnStart !== false;
     document.getElementById('defaultRecordingMode').value = result.defaultRecordingMode || 'current';
     document.getElementById('defaultFilterMode').value = result.defaultFilterMode || 'all';
     document.getElementById('autoSnapshotDefault').checked = result.autoSnapshotDefault !== false;
@@ -80,7 +81,8 @@ function setupEventListeners() {
       browserProxy: document.getElementById('browserProxy').value.trim(),
       tmdbApiKey: document.getElementById('tmdbApiKey').value.trim(),
       torrserverUrl: document.getElementById('torrserverUrl').value.trim(),
-      captureDownloadsOnly: document.getElementById('captureDownloadsOnly').checked
+      captureDownloadsOnly: document.getElementById('captureDownloadsOnly').checked,
+      reloadOnStart: document.getElementById('reloadOnStart').checked
     };
     
     chrome.storage.sync.set(settings, () => {

@@ -41,7 +41,9 @@ function toPythonStringLiteral(s) {
 // captured/analysis data uses the same proven neutralization instead of each repeating it
 // ad-hoc (or, as happened, some forgetting it entirely).
 function safeDocstringText(s) {
-  return String(s).replace(/"""/g, "'''");
+  // [4.6.1] backslashes doubled too: text copied from scripts (e.g. "/\/$/")
+  // made Python warn "invalid escape sequence" inside the docstring
+  return String(s).replace(/\\/g, "\\\\").replace(/"""/g, "'''");
 }
 
 // ═══ MAIN EXPORT FUNCTIONS ═══
@@ -1567,6 +1569,112 @@ function formatRouteTreeForDisplay(tree, depth) {
   return output;
 }
 
+// ─── [4.6.1] site vs. ad / pop-under hosts ──────────────────────────────
+// Streaming sites open pop-unders and redirect chains in new tabs; those
+// pages are main_frame loads too. Recognised by host (known networks seen in
+// real recordings) or by URL shape (pop/click/redirect trackers).
+const AD_HOST_WORDS = [
+  'asiafilm.org', 'adclickad', 'viiukuhe', '1osb.com', 'anym8', 're3r.com', 'qualiclicks',
+  'top-prijzen', 'churchilltopless', 'stuins.com', 'cardiaccrystaleternity', 'o11qnji32yff',
+  'gamingfree.online', 'superagigo', 'ptinusmufasal', 'kzeaxmzil', 'autorepairworcester',
+  'pixelflowsweb', 'frs2c', 'hezrondato', 'bebangcaromel', 'wrzservice', 'press-continue',
+  'popads', 'popcash', 'propellerads', 'adsterra', 'exoclick', 'juicyads', 'adcash',
+  'onclickads', 'clickadu', 'hilltopads', 'monetag', 'doubleclick', 'googlesyndication',
+];
+const AD_URL_RE = /(?:^|[./_-])(?:popunder|popads?|adclick|clickunder|preland|smart\.php|redir\d*|redirect|tracker|affiliate|casino)(?:[./_?=-]|$)|\/4\/[0-9a-f]{20,}|[?&](?:spot_id|zoneid|zone_id|campaign_id|ymid|subid|psid)=/i;
+
+function isAdLikeUrl(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    if (AD_HOST_WORDS.some(w => h.includes(w))) return true;
+    return AD_URL_RE.test(h + u.pathname + u.search);
+  } catch (e) {
+    return false;
+  }
+}
+
+function siteLabelOf(host) {
+  // "tv10.egydead.live" -> "egydead", "www.example.co.uk" -> "example"
+  const parts = String(host || '').toLowerCase().split('.').filter(Boolean);
+  if (parts.length < 2) return parts[0] || '';
+  const sld = parts[parts.length - 2];
+  if (['co', 'com', 'net', 'org', 'gov', 'edu', 'ac'].includes(sld) && parts.length >= 3) return parts[parts.length - 3];
+  return sld;
+}
+
+function isOnSite(url, host, label) {
+  if (!host) return true;
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === host || (label && label.length > 2 && siteLabelOf(h) === label);
+  } catch (e) {
+    return false;
+  }
+}
+
+function detectSiteHost(networkLog, actions, frameDocuments) {
+  const score = {}, first = {}, adHosts = new Set();
+  const add = (url, pts, ts) => {
+    let h;
+    try { h = new URL(url).hostname.toLowerCase(); } catch (e) { return; }
+    if (!/^https?:/.test(url)) return;
+    if (isAdLikeUrl(url)) { adHosts.add(h); return; }
+    score[h] = (score[h] || 0) + pts;
+    if (ts && (!first[h] || ts < first[h])) first[h] = ts;
+  };
+  for (const e of networkLog || []) {
+    if (!e || !e.url) continue;
+    // a redirect hop is a pass-through, not a page the user was on
+    if (e.type === 'main_frame' && !(e.redirectUrl && e.statusCode >= 300 && e.statusCode < 400)) add(e.url, 2, e.timestamp);
+  }
+  for (const d of frameDocuments || []) if (d && d.isTop && d.url) add(d.url, 2, d.timestamp);
+  // hosts seen loading as an embedded frame (players, MegaMax-style mirror
+  // pickers) -- clicks inside them are not clicks on the site
+  const frameHosts = new Set();
+  for (const e of networkLog || []) {
+    if (e && e.type === 'sub_frame' && e.url) { try { frameHosts.add(new URL(e.url).hostname.toLowerCase()); } catch (x) {} }
+  }
+  const EMBED_PATH_RE = /\/(?:iframe|embed|e|v|player|watch_frame)\/|\/embed-/i;
+  for (const a of actions || []) {
+    const u = (a && a.pageState && typeof a.pageState === 'object' && a.pageState.url) || (a && a.url);
+    if (!u) continue;
+    let pts = 1;
+    try {
+      const x = new URL(u);
+      if (frameHosts.has(x.hostname.toLowerCase()) || EMBED_PATH_RE.test(x.pathname)) pts = 0.2;
+    } catch (e) {}
+    add(u, pts, a.timestamp);
+  }
+  const hosts = Object.keys(score);
+  if (!hosts.length) return { host: null, label: '', adHosts: [...adHosts] };
+  // the recording started on the site: the earliest top-level host gets a bonus
+  const start = hosts.slice().sort((a, b) => (first[a] || Infinity) - (first[b] || Infinity))[0];
+  if (start) score[start] += 10;
+  // the site's sibling mirrors (tv10.egydead.live / egydead.com) pool their score
+  const byLabel = {};
+  for (const h of hosts) byLabel[siteLabelOf(h)] = (byLabel[siteLabelOf(h)] || 0) + score[h];
+  const best = hosts.sort((a, b) => (byLabel[siteLabelOf(b)] - byLabel[siteLabelOf(a)]) || (score[b] - score[a]))[0];
+  return { host: best, label: siteLabelOf(best), adHosts: [...adHosts].slice(0, 20) };
+}
+
+// NovaPlay's own site extractors (extractors/<name>.py) as of 4.6.1 -- a
+// generated file for one of these sites is a comparison aid, not a replacement
+const NOVAPLAY_EXTRACTORS = ['aflaam', 'akwam', 'akwams', 'alooytv', 'arablionz', 'arabseed', 'cimawbas',
+  'cimawebas', 'cineby', 'cinejoy', 'egybest', 'egydead', 'fasel', 'faselhd', 'fivetv', 'imdb',
+  'movy', 'mycima', 'mywecima', 'onlyflix', 'sflix', 'shaheed', 'shahid4u', 'topcinema', 'vidsrc',
+  'wecima', 'wingst', 'yts', 'zetmoon'];
+
+function existingNovaPlayExtractor(siteName, siteLabel) {
+  const keys = [String(siteName || '').toLowerCase().replace(/[^a-z0-9]/g, ''), String(siteLabel || '').toLowerCase()];
+  for (const k of keys) {
+    if (!k) continue;
+    const hit = NOVAPLAY_EXTRACTORS.find(n => k === n || k.startsWith(n) || n.startsWith(k));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, userJourney, scriptBodies, frameDocuments) {
   scriptBodies = scriptBodies || [];
   frameDocuments = frameDocuments || [];
@@ -1643,13 +1751,30 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // made the whole extractor point at the wrong site. Prefer the real top-level page
   // (main_frame request, then a top-frame document), then fall back to the old behaviour.
   const _origin = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? `${x.protocol}//${x.hostname}` : null; } catch (e) { return null; } };
-  const mainFrame = networkLog.find(e => e && e.type === 'main_frame' && _origin(e.url));
-  const topDoc = frameDocuments.find(d => d && d.isTop && _origin(d.url));
-  analysis.baseUrl = (mainFrame && _origin(mainFrame.url)) || (topDoc && _origin(topDoc.url)) || null;
+  // [4.6.1] which host IS the site. "First main_frame in the log" picked a
+  // pop-under (asiafilm.org) on a real EgyDead recording, and the whole
+  // extractor -- main_url, categories, pagination -- followed it. Ad /
+  // pop-under / redirect pages are recognised and skipped, and the site is
+  // the top-level host the recording started on and kept coming back to.
+  const site = detectSiteHost(networkLog, actions, frameDocuments);
+  analysis.siteHost = site.host;
+  analysis.siteLabel = site.label;
+  analysis.ignoredAdHosts = site.adHosts;
+  analysis.baseUrl = site.host ? 'https://' + site.host : null;
+  if (!analysis.baseUrl) {
+    const mainFrame = networkLog.find(e => e && e.type === 'main_frame' && _origin(e.url) && !isAdLikeUrl(e.url));
+    const topDoc = frameDocuments.find(d => d && d.isTop && _origin(d.url) && !isAdLikeUrl(d.url));
+    analysis.baseUrl = (mainFrame && _origin(mainFrame.url)) || (topDoc && _origin(topDoc.url)) || null;
+  }
   for (const entry of networkLog) {
     if (analysis.baseUrl) break;
-    analysis.baseUrl = _origin(entry && entry.url);
+    if (entry && !isAdLikeUrl(entry.url)) analysis.baseUrl = _origin(entry.url);
   }
+  const onSite = (u) => isOnSite(u, analysis.siteHost, analysis.siteLabel);
+  // only the site's own pages count for categories, pagination and detail routes
+  const siteActions = analysis.siteHost
+    ? actions.filter(a => a && onSite(a.href || a.url || ''))
+    : actions;
 
   // Extract categories from actions
   // [FIX] real sites use many different URL shapes for category-like listings, not just
@@ -1668,6 +1793,26 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
     '/channel/', '/serie/', '/series/', '/season/', '/language/', '/country/', '/year/'
   ];
   const seenCategoryUrls = new Set();
+  // [4.6.1] a category is a LISTING on the site itself: not an ad, not a page-2
+  // link (that's pagination), and for item-ish prefixes (/serie/, /season/ ...)
+  // only the bare listing ("/serie/"), not one title under it
+  // ("/serie/house-of-lies-2012/" is a series page, not a category)
+  const ITEM_PREFIXES = ['/serie/', '/series/', '/season/', '/seasons/'];
+  function isCategoryListing(url) {
+    if (!url || isAdLikeUrl(url) || !onSite(url)) return false;
+    if (/[?&]page=\d+|\/page\/\d+/.test(url)) return false;
+    let path;
+    try { path = new URL(url).pathname.toLowerCase(); } catch (e) { return false; }
+    if (!CATEGORY_URL_PATTERNS.some(p => path.includes(p))) return false;
+    for (const pre of ITEM_PREFIXES) {
+      const i = path.indexOf(pre);
+      if (i >= 0 && path.slice(i + pre.length).replace(/\/+$/, '') !== '') {
+        // "/series-category/x" style taxonomy still counts; a title slug doesn't
+        if (!CATEGORY_URL_PATTERNS.some(p => !ITEM_PREFIXES.includes(p) && path.includes(p))) return false;
+      }
+    }
+    return true;
+  }
 
   // [FIX] confirmed directly against a real egydead.ca capture: generated
   // category titles came out as raw numeric/opaque path segments (e.g.
@@ -1774,8 +1919,8 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
     return !title || /^[0-9a-f]{6,}$/i.test(title.trim()) || /^\d+$/.test(title.trim());
   }
 
-  for (const action of actions) {
-    if (action.href && CATEGORY_URL_PATTERNS.some(p => action.href.includes(p))) {
+  for (const action of siteActions) {
+    if (action.href && isCategoryListing(action.href)) {
       let title = action.text;
       if (isOpaqueTitle(title)) {
         title = lookupNavTitle(action.href) || title;
@@ -1810,7 +1955,7 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
     }
   }
   for (const entry of networkLog) {
-    if (entry.url && CATEGORY_URL_PATTERNS.some(p => entry.url.includes(p))
+    if (entry.url && isCategoryListing(entry.url)
         && !seenCategoryUrls.has(entry.url)) {
       analysis.categories.push({
         title: deriveCategoryTitleFromUrl(entry.url),
@@ -1825,7 +1970,8 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // capturedData (capturedData?.networkLog), not just the live session, so a malformed entry
   // is more plausible here than in the live-only capture path.
   for (const entry of networkLog) {
-    if (entry.url && (entry.url.includes('search') || entry.url.includes('find'))) {
+    if (entry.url && (entry.url.includes('search') || entry.url.includes('find'))
+        && !isAdLikeUrl(entry.url) && onSite(entry.url)) {
       analysis.searchEndpoint = entry.url;
       analysis.searchPattern = entry.method || 'GET';
     }
@@ -1990,7 +2136,9 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // pagination is now recognized too, from the same networkLog scan.
   for (const entry of networkLog) {
     if (!entry.url) continue;
-    if (entry.url.includes('page=')) {
+    // [4.6.1] the site's own pages only (an ad-click URL carried "page=")
+    if (isAdLikeUrl(entry.url) || !onSite(entry.url)) continue;
+    if (/[?&]page=\d+/.test(entry.url)) {
       analysis.paginationPatterns.push(entry.url.replace(/page=\d+/, 'page={page}'));
     } else if (/\/page\/\d+\/?/.test(entry.url)) {
       analysis.paginationPatterns.push(entry.url.replace(/\/page\/\d+\/?/, '/page/{page}/'));
@@ -2045,6 +2193,7 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
 
     try {
       const resolved = body.url ? new URL(found, body.url).href : found;
+      if (isAdLikeUrl(resolved) || !onSite(resolved)) continue;
       let pattern = resolved;
       if (/\/page\/\d+\/?/.test(pattern)) pattern = pattern.replace(/\/page\/\d+\/?/, '/page/{page}/');
       else if (/page=\d+/.test(pattern)) pattern = pattern.replace(/page=\d+/, 'page={page}');
@@ -2213,7 +2362,7 @@ function analyzeCapturedData(networkLog, xhrBodies, actions, contentPipeline, us
   // [NEW] additive route-type classification, ported from
   // spa-route-mapper.js -- see that function's own comment for why this
   // one specifically, and not its two siblings.
-  const discoveredRoutes = mapSPARoutesFromCapturedData(actions);
+  const discoveredRoutes = mapSPARoutesFromCapturedData(siteActions);
   if (discoveredRoutes.length > 0) {
     analysis.discoveredRoutes = discoveredRoutes;
     analysis.detailRouteSample = discoveredRoutes.find(r => r.routeType === 'detail') || null;
@@ -2351,6 +2500,23 @@ function generateFullPluginExtractor(siteName, analysis) {
   code += `site-specific confirmation (container class names, selectors) that this\n`;
   code += `generator cannot determine on its own -- see each one for what to check.\n`;
   code += `\n`;
+  // [4.6.1] NovaPlay already ships an extractor for this site: say so first
+  const _existing = existingNovaPlayExtractor(siteName, analysis.siteLabel);
+  if (_existing) {
+    code += `ALREADY IN NOVAPLAY: extractors/${safeDocstringText(_existing)}.py handles this site\n`;
+    code += `(server lists, mirrors, resolvers already tested on the box). Do NOT\n`;
+    code += `replace it with this file -- use the DETECTED notes below to compare\n`;
+    code += `(new domains, endpoints, hosts) and patch the existing extractor.\n`;
+    code += `\n`;
+  }
+  if (analysis.siteHost) {
+    code += `SITE: ${safeDocstringText(analysis.siteHost)}  (picked as the site the recording\n`;
+    code += `started on and stayed on; main_url, categories and pagination use it)\n`;
+    if (analysis.ignoredAdHosts && analysis.ignoredAdHosts.length) {
+      code += `IGNORED as ads / pop-unders / redirects: ${safeDocstringText(analysis.ignoredAdHosts.slice(0, 10).join(', '))}\n`;
+    }
+    code += `\n`;
+  }
   // [NEW] a whole-site overview of every distinct, real API endpoint
   // shape this site was confirmed to actually use -- ported from
   // api-discoverer.js. URLs/params are already URL-decoded text by this
@@ -2774,17 +2940,19 @@ function generateFullPluginExtractor(siteName, analysis) {
   if (analysis.jsonFields) {
     const jf = analysis.jsonFields;
     code += `\n`;
-    code += `        DETECTED: this site's listing data is JSON, not HTML (confirmed\n`;
-    code += `        from a real captured sample). Real field names found in that\n`;
-    code += `        sample:\n`;
+    // [4.6.1] this sample is Stream Recorder's OWN list scan (contentPipeline),
+    // not a reply from the site -- it was reported as "the site's listing is
+    // JSON" on EgyDead, a plain-HTML site
+    code += `        DETECTED: Stream Recorder's own list scan found items with these\n`;
+    code += `        fields (its extracted data, NOT a reply from the site -- check\n`;
+    code += `        whether the real listing is HTML or a JSON API before using this):\n`;
     if (jf.titleField) code += `            title:  item["${jf.titleField}"]\n`;
     if (jf.posterField) code += `            poster: item["${jf.posterField}"]\n`;
     if (jf.plotField) code += `            plot:   item["${jf.plotField}"]\n`;
     if (jf.idField) code += `            id:     item["${jf.idField}"]\n`;
     if (jf.ratingField) code += `            rating: item["${jf.ratingField}"]\n`;
-    code += `        Fetch the URL as JSON (not HTML) and build each card from these\n`;
-    code += `        fields instead of the HTML-scraping code below, which will not\n`;
-    code += `        find anything on a JSON response.\n`;
+    code += `        If the listing really is a JSON API, build each card from these\n`;
+    code += `        fields instead of the HTML-scraping code below.\n`;
     // [NEW] a real, runnable dataclass + parser, generated from this same
     // confirmed sample -- ported from schema-generator.js, already wired
     // into its own separate popup button but never connected here.

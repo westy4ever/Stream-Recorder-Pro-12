@@ -161,6 +161,99 @@ Gen Extractor / Full Extractor now look past the raw requests and write these fi
 | **Trailers ignored** | IMDb video, YouTube and `trailers.*` addresses are never offered as the film's stream |
 | **NovaPlay check** | The warnings list now flags imports NovaPlay's `extractors/base.py` doesn't have, `BeautifulSoup` use, broken URL joins and wrong method signatures |
 
+## New in 4.6 and 4.7
+
+### Reload on start (4.7.0)
+When you press **▶ Start**, the tab you're on reloads, so the page itself is
+recorded from its first request: its address, headers and cookies. Before
+this, a page that had already loaded was missing from the recording (a real
+EgyDead recording had no EgyDead requests at all).
+
+- Switch it off in **Options → Reload the page when recording starts**.
+- If the page came from a form (a "watch" button that posts), Brave may ask
+  whether to resend it. Click **Continue**.
+
+### 🍪 For NovaPlay: Cloudflare cookies for the box (4.7.0)
+Some sites (EgyDead, FaselHDX, WeCima, CWB) show the box a Cloudflare
+"checking your browser" page. Brave passes it and gets a clearance cookie
+(`cf_clearance`). That cookie only works with Brave's exact identity and your
+internet address. The box shares your PC's address, so NovaPlay can use it.
+
+**Step by step**
+
+1. **Reload the extension once** after updating: `brave://extensions` → reload
+   on the Stream Recorder card. 4.7.0 asks for the *cookies* permission; allow it.
+2. **Open the site in Brave** (for example `https://tv10.egydead.live/`) and wait
+   until the real page shows, not "Just a moment…".
+3. With that tab active, open the popup and click **🍪 For NovaPlay**.
+   The status line says how many sites were saved and lists the ones with a
+   Cloudflare clearance. If it says *no Cloudflare clearance found*, the site
+   didn't challenge Brave this time, so nothing is needed yet.
+4. A file named **`novaplay_cookies.json`** is saved to your Downloads folder.
+   It holds that site's cookies, every Cloudflare clearance Brave has, and
+   Brave's User-Agent.
+5. **Copy it to the box** as `/etc/enigma2/novaplay_cookies.json`. Any of these
+   works:
+   - **WinSCP / FileZilla:** connect to the box's IP (SFTP or FTP, user `root`),
+     go to `/etc/enigma2/`, drop the file there.
+   - **Windows command line** (Windows 10/11 has `scp` built in):
+     `scp "%USERPROFILE%\Downloads\novaplay_cookies.json" root@BOX-IP:/etc/enigma2/`
+   - **DreamExplorer / a file manager on the box**, from a USB stick.
+6. **Nothing to restart.** NovaPlay reads the file the next time it opens a
+   page, and re-reads it whenever you copy a new one.
+7. **Check it worked:** on the box run
+   `grep -i "browser cookies" /tmp/novaplay.log | tail -3`.
+   You should see *"using N cookie(s) incl. cf_clearance for …"*.
+
+**Good to know**
+
+- **The clearance expires,** usually within hours to a day. When the site
+  shows "Cloudflare" in NovaPlay's log again, repeat steps 2–5.
+  NovaPlay skips an expired clearance by itself.
+- **One file for all sites:** visit every blocked site in Brave first, then
+  click the button once. It collects every clearance Brave holds.
+- **Same internet connection only:** if the PC or the box changes network
+  (VPN, mobile hotspot), the clearance stops working.
+- **It may not be enough:** Cloudflare can also check the connection's own
+  fingerprint. If the log shows the cookie being used but the site still says
+  Cloudflare, use NovaPlay's browser proxy instead.
+- **Privacy:** the file contains login cookies for the current site too. Keep
+  it on your PC and the box only.
+
+### Search reminder (4.7.0)
+When you press **⏹ Stop**, the status line reminds you if the recording has
+no search in it. The extractor generator can only find a site's search if you
+typed a title in the site's own search box while recording.
+
+### requestContext export (4.6.0, timing in 4.7.0)
+The split export now has a `stream_recording_requestContext_….json` file,
+built from the network log:
+
+| Part | What it shows | Why it helps |
+|---|---|---|
+| `frameMap` | Every page and iframe, its parent frame, and where it was redirected from | Which player page sits inside which site page |
+| `redirects` | Each HTTP redirect hop (from → to, status) | A player domain that moved, e.g. `mixdrop.ps` → `mxdrop.click` |
+| `streamRequests` | Each video or playlist request next to the request of the page that issued it; `differs` lists identity headers that changed | Tokens tied to a header: LuluStream and StreamRuby needed the same `Accept-Language` on both |
+| `cdnStats` | Per video server: requests, ranged requests, errors, MB, average KB/s | Many small slow requests means a server that stutters through a player (Mixdrop) |
+| `cookiesByDomain` | Cookies each site set (all `Set-Cookie`s) and the names sent back | Session cookies a resolver has to carry |
+
+Redirect hops are kept as their own `networkLog` entries since 4.6.0. They
+used to be overwritten by the address they redirected to.
+
+### Extractor generator (4.6.1)
+- **Picks the real site:** the generator recognises pop-ups, ad networks and
+  redirect trackers and ignores them. The site is the top-level domain the
+  recording started on and stayed on. The generated file lists the site it
+  picked and the ad hosts it ignored.
+- **Site pages only:** categories, next-page links and detail pages come
+  only from the site's own pages. A page-2 link or a single title under
+  `/serie/` is no longer a "category".
+- **Already in NovaPlay:** for a site NovaPlay already handles, the file
+  starts with *ALREADY IN NOVAPLAY: extractors/<name>.py*. Use the file to
+  compare and patch that extractor, not to replace it.
+- **Honest data labels:** the extension's own list scan is no longer reported
+  as "this site's listing is JSON".
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -169,13 +262,15 @@ Gen Extractor / Full Extractor now look past the raw requests and write these fi
 | `Scripts captured: 0 OK, 0 failed` | Old version running, or XHR/Fetch only was on | Reload; turn XHR/Fetch only off; record again |
 | Scripts listed as failed | The site refused the extension's copy of a script | Send the export anyway: each failure records its reason |
 | A section's file is missing from Split | That section was empty | Check the manifest counts; record again if it matters |
-| `Page/iframe HTML captured: 0` | Old version, or the recording started after the page loaded | Start first, then load the page |
+| `Page/iframe HTML captured: 0` | Old version, or Reload on start switched off and the page loaded before Start | Turn Reload on start back on, or reload the page after pressing Start |
 | Network count doesn't move when you press play | The video never really started | Close ad tabs, press play again, let it run |
 | Nothing captured from a new tab | Record was Current Tab and the tab wasn't opened from the recorded one | Open the player from the recorded tab, or switch to All Tabs |
 | No "Save as" window | Intended: files go to Downloads | Look in Downloads for `stream_recording_...` |
 | Exported JSON is huge | Long session with many pages | One short recording per job; use Split by section |
 | Solve CF never says solved | Challenge still showing after 30 s | Solve it in the tab it opens, then try again |
-| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.5.0 |
+| Two Stream Recorder Pro cards | An old copy still installed | Remove the old one; keep the one at 4.7.0 |
+| 🍪 button says "Reload the extension" | The new cookies permission isn't active yet | `brave://extensions` → reload on the card, allow the permission |
+| 🍪 file saved but NovaPlay still blocked | Clearance expired, wrong folder, or Cloudflare also checks the connection | File must be `/etc/enigma2/novaplay_cookies.json`; export a fresh one; else use the browser proxy |
 
 ## What it can't capture
 
@@ -183,6 +278,6 @@ Gen Extractor / Full Extractor now look past the raw requests and write these fi
 - **Scripts over 5 MB:** the rest is cut and marked `"truncated": true`.
 - **API replies over 1000 KB:** cut at the Options limit.
 - **WebAssembly decryptors:** the `.wasm` file is a request in `networkLog`, but its code isn't readable from the recording.
-- **What happened before Start:** start recording first, then load the page.
+- **What happened before Start:** Reload on start covers the current page; earlier pages in other tabs aren't recorded.
 - **A page's changes after the snapshot limit:** auto-snapshot keeps up to 4 per page address; take a manual snapshot for anything later.
 - **Working code on its own:** Gen Extractor writes a starting point. A real resolver for a protected player still needs reading and testing by hand.

@@ -97,6 +97,15 @@ export function initMessageHandlers() {
         } else {
           console.warn("[auto-snapshot] No active tab found when starting recording");
         }
+        // [4.7.0] the page you're on had loaded BEFORE Start, so its own requests
+        // (address, headers, cookies) were never recorded -- a real EgyDead
+        // recording had none at all. Reload it so it's recorded from request one.
+        if (message.reloadOnStart !== false && tab && tab.id && /^https?:/.test(tab.url || '')
+            && (!s.recordTabId || s.recordTabId === tab.id)) {
+          setTimeout(() => {
+            try { chrome.tabs.reload(tab.id, { bypassCache: true }); } catch (e) { console.warn('reload on start failed', e); }
+          }, 300);
+        }
         persistState();
       });
       sendResponse({ status: "ok" });

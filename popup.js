@@ -193,11 +193,12 @@ startBtn.onclick = () => {
   const useCurrentTabOnly = recordTabSelect.value === "current";
 
   const startWith = (tabId) => {
-    chrome.storage.sync.get(['allowedDomains', 'blockedDomains', 'maxBodySize'], (cfg) => {
+    chrome.storage.sync.get(['allowedDomains', 'blockedDomains', 'maxBodySize', 'reloadOnStart'], (cfg) => {
       chrome.runtime.sendMessage({
         type: "startRecording",
         filterMode,
         autoSnapshot,
+        reloadOnStart: cfg.reloadOnStart !== false,
         tabId: tabId,
         allowedDomains: cfg.allowedDomains || [],
         blockedDomains: cfg.blockedDomains || [],
@@ -251,10 +252,19 @@ stopBtn.onclick = () => {
   
   chrome.runtime.sendMessage({ type: "getRecordingData" }, (response) => {
     if (response && response.data) {
-      currentRecordingData = response.data;
+      currentRecordingData = withRequestContext(response.data);
       const jsonStr = JSON.stringify(currentRecordingData, null, 2);
       jsonPreview.value = jsonStr;
       statusDiv.innerText = `✅ Ready. ${currentRecordingData.actions?.length || 0} actions, ${currentRecordingData.networkLog?.length || 0} network entries.`;
+      // [4.7.0] the extractor generator can only find a site's search if the
+      // recording contains one -- remind, since it's easy to forget
+      const _acts = currentRecordingData.actions || [];
+      const _net = currentRecordingData.networkLog || [];
+      const _searched = _acts.some(a => a && a.type === 'type') ||
+        _net.some(e => e && /[?&](?:s|q|query|keyword|search)=|\/search\b/i.test(e.url || '') && !/google|bing|yandex|analytics/i.test(e.url || ''));
+      if (!_searched) {
+        statusDiv.innerText += "\n💡 No search recorded -- for an extractor, record again and type a title in the site's own search box.";
+      }
       progressFill.style.width = "100%";
       setTimeout(() => { progressFill.style.width = "0%"; }, 1000);
     } else {
@@ -269,6 +279,174 @@ stopBtn.onclick = () => {
 const exportScopeSelect = document.getElementById("exportScope");
 
 // The top-level sections a recording can be split into, in the order they should download.
+
+// ═══ [4.6.0] requestContext: what a stream request depended on ═══════════════════
+// Built from networkLog at export time (no extra recording needed):
+//  frameMap        every page/iframe load: frame id, parent frame, address, redirects
+//  redirects       each HTTP redirect hop (from -> to, status) -- e.g. a player
+//                  frame on mixdrop.ps that actually opened on mxdrop.click
+//  streamRequests  each video/playlist request next to the request of the page
+//                  (frame) that issued it, for the headers players get checked on;
+//                  "differs" lists those whose value changed between the two (a token
+//                  tied to Accept-Language broke LuluStream when they didn't match)
+//  cookiesByDomain cookies each domain set (all Set-Cookie headers) and the cookie
+//                  names sent to it
+const _CTX_HEADERS = ['User-Agent', 'Accept-Language', 'Referer', 'Origin', 'Cookie',
+  'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Sec-Fetch-Site', 'sec-ch-ua', 'Accept', 'Range'];
+const _CTX_STREAM_RE = /\.(m3u8|mpd|mp4|mkv|webm|ts|m4s)(\?|$)|\/hls\d?\/|\/playlist|master\.txt|\/get_video|\/manifest/i;
+
+function _hdr(obj, name) {
+  if (!obj) return undefined;
+  const want = name.toLowerCase();
+  for (const k of Object.keys(obj)) if (k.toLowerCase() === want) return obj[k];
+  return undefined;
+}
+
+function _host(u) {
+  try { return new URL(u).hostname; } catch (e) { return ''; }
+}
+
+function _ctxBytes(e) {
+  // bytes actually delivered: Content-Range span, else Content-Length
+  const cr = String(_hdr(e.responseHeaders, 'content-range') || '');
+  const m = cr.match(/bytes\s+(\d+)-(\d+)/i);
+  if (m) return Number(m[2]) - Number(m[1]) + 1;
+  const cl = Number(_hdr(e.responseHeaders, 'content-length') || 0);
+  return cl > 0 ? cl : 0;
+}
+
+function buildRequestContext(data) {
+  const log = Array.isArray(data && data.networkLog) ? data.networkLog : [];
+  const byTime = log.slice().sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  // frames: latest document load per tab+frame, with every address it loaded
+  const frames = {};
+  for (const e of byTime) {
+    if (e.type !== 'main_frame' && e.type !== 'sub_frame') continue;
+    if (e.redirectUrl && e.statusCode >= 300 && e.statusCode < 400) continue;  // a hop, not the load
+    const k = e.tabId + ':' + e.frameId;
+    const f = frames[k] || { tabId: e.tabId, frameId: e.frameId, parentFrameId: e.parentFrameId ?? null, loads: [] };
+    f.url = e.url;
+    f.status = e.statusCode;
+    f.requestHeaders = e.requestHeaders || {};
+    f.redirectedFrom = e.redirectChain && e.redirectChain.length > 1 ? e.redirectChain[0] : (e.redirectedFrom || null);
+    f.loads.push(e.url);
+    if (e.parentFrameId !== undefined && e.parentFrameId !== null) f.parentFrameId = e.parentFrameId;
+    frames[k] = f;
+  }
+  const frameMap = Object.values(frames).map(f => {
+    const parent = frames[f.tabId + ':' + f.parentFrameId];
+    return {
+      tabId: f.tabId, frameId: f.frameId, parentFrameId: f.parentFrameId,
+      parentUrl: parent ? parent.url : null,
+      url: f.url, redirectedFrom: f.redirectedFrom, status: f.status,
+      loads: f.loads.length > 1 ? f.loads : undefined,
+    };
+  });
+
+  const redirects = byTime
+    .filter(e => e.redirectUrl && e.statusCode >= 300 && e.statusCode < 400)
+    .map(e => ({ from: e.url, to: e.redirectUrl, status: e.statusCode, type: e.type, frameId: e.frameId }));
+
+  const seen = new Set();
+  const streamRequests = [];
+  for (const e of byTime) {
+    const ctype = String(_hdr(e.responseHeaders, 'content-type') || '').toLowerCase();
+    const isStream = e.type === 'media' || _CTX_STREAM_RE.test(e.url || '') ||
+      /^video\/|mpegurl|dash\+xml/.test(ctype);
+    if (!isStream || e.type === 'main_frame' || e.type === 'sub_frame' || e.type === 'script') continue;
+    let key;
+    try { const u = new URL(e.url); key = u.host + u.pathname; } catch (x) { key = e.url; }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const page = frames[e.tabId + ':' + e.frameId];
+    const pageH = {}, streamH = {}, differs = [];
+    for (const name of _CTX_HEADERS) {
+      const pv = page ? _hdr(page.requestHeaders, name) : undefined;
+      const sv = _hdr(e.requestHeaders, name);
+      if (pv !== undefined) pageH[name] = name === 'Cookie' ? String(pv).slice(0, 200) : pv;
+      if (sv !== undefined) streamH[name] = name === 'Cookie' ? String(sv).slice(0, 200) : sv;
+      if (pv !== undefined && pv !== sv && !['Referer', 'Accept', 'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Range'].includes(name)) {
+        differs.push(name);
+      }
+    }
+    streamRequests.push({
+      url: e.url, status: e.statusCode, type: e.type, contentType: ctype || undefined,
+      frameUrl: page ? page.url : null,
+      pageRequestHeaders: pageH,
+      streamRequestHeaders: streamH,
+      differs: differs,
+      durationMs: e.durationMs,
+      bytes: _ctxBytes(e) || undefined,
+      acceptRanges: _hdr(e.responseHeaders, 'accept-ranges'),
+      contentRange: _hdr(e.responseHeaders, 'content-range'),
+      allowOrigin: _hdr(e.responseHeaders, 'access-control-allow-origin'),
+    });
+    if (streamRequests.length >= 60) break;
+  }
+
+  // [4.7.0] per video-server host: how many requests the player made, how much
+  // they carried, how fast -- many small slow requests = a player reconnecting
+  // to a slow server (what made Mixdrop stutter on the box)
+  const cdnStats = {};
+  for (const e of byTime) {
+    const ctype = String(_hdr(e.responseHeaders, 'content-type') || '').toLowerCase();
+    const isStream = e.type === 'media' || _CTX_STREAM_RE.test(e.url || '') || /^video\/|mpegurl/.test(ctype);
+    if (!isStream || e.type === 'main_frame' || e.type === 'sub_frame' || e.type === 'script') continue;
+    const h = _host(e.url);
+    if (!h) continue;
+    const st = cdnStats[h] || (cdnStats[h] = { requests: 0, ranged: 0, bytes: 0, ms: 0, errors: 0 });
+    st.requests += 1;
+    if (_hdr(e.requestHeaders, 'Range')) st.ranged += 1;
+    if (e.error || (e.statusCode && e.statusCode >= 400)) st.errors += 1;
+    const b = _ctxBytes(e);
+    if (b && e.durationMs) { st.bytes += b; st.ms += e.durationMs; }
+  }
+  for (const h of Object.keys(cdnStats)) {
+    const st = cdnStats[h];
+    st.avgKBps = st.ms ? Math.round(st.bytes / st.ms) : null;   // bytes per ms = KB/s
+    st.mb = Math.round(st.bytes / 1e5) / 10;
+    delete st.ms;
+  }
+
+  const cookiesByDomain = {};
+  const dom = (h) => (cookiesByDomain[h] = cookiesByDomain[h] || { set: {}, sent: [] });
+  for (const e of byTime) {
+    const h = _host(e.url);
+    if (!h) continue;
+    const sets = e.setCookies || (_hdr(e.responseHeaders, 'set-cookie') ? [_hdr(e.responseHeaders, 'set-cookie')] : []);
+    for (const c of sets) {
+      const first = String(c).split(';')[0];
+      const i = first.indexOf('=');
+      if (i <= 0) continue;
+      const name = first.slice(0, i).trim();
+      const d = dom(h);
+      if (!(name in d.set)) d.set[name] = { value: first.slice(i + 1).slice(0, 80), attrs: String(c).split(';').slice(1).map(x => x.trim()).filter(Boolean).join('; '), setBy: e.url };
+    }
+    const sent = _hdr(e.requestHeaders, 'Cookie');
+    if (sent) {
+      const d = dom(h);
+      for (const part of String(sent).split(';')) {
+        const name = part.split('=')[0].trim();
+        if (name && !d.sent.includes(name)) d.sent.push(name);
+      }
+    }
+  }
+
+  return { frameMap, redirects, streamRequests, cdnStats, cookiesByDomain };
+}
+
+function withRequestContext(data) {
+  try {
+    if (data && Array.isArray(data.networkLog) && data.networkLog.length) {
+      data.requestContext = buildRequestContext(data);
+    }
+  } catch (e) {
+    console.warn('requestContext failed', e);
+  }
+  return data;
+}
+
 const EXPORT_SECTIONS = [
   { key: 'networkLog', label: 'networkLog' },
   { key: 'xhrBodies', label: 'xhrBodies' },
@@ -286,6 +464,8 @@ const EXPORT_SECTIONS = [
   // need splitting in the first place. The existing chunking logic below already handles any
   // array-valued section generically, so this needed no other change to work correctly.
   { key: 'screenshots', label: 'screenshots' },
+  // [4.6.0] frame map, redirects, page-vs-stream headers, cookies (see buildRequestContext)
+  { key: 'requestContext', label: 'requestContext' },
 ];
 
 // Returns a smaller data object containing only what the chosen scope asks for. "all" and
@@ -396,10 +576,15 @@ async function doSplitExport(data, format) {
   // getting a slightly different value if computed separately partway through the run.
   const exportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-  const sectionsPresent = EXPORT_SECTIONS.filter(s => {
-    const v = data[s.key];
-    return Array.isArray(v) ? v.length > 0 : (v && Object.keys(v).length > 0);
-  });
+  // [4.6.0] an object section counts as empty when everything inside it is empty
+  // (contentPipeline is only filled on list pages; it was exported empty every time)
+  const _isEmpty = (v) => {
+    if (v === null || v === undefined || v === '') return true;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object') return Object.values(v).every(_isEmpty);
+    return false;
+  };
+  const sectionsPresent = EXPORT_SECTIONS.filter(s => !_isEmpty(data[s.key]));
 
   // Pre-flight: work out how many files each section will actually produce, so progress
   // reporting and the manifest both reflect the real total (including chunked-out parts).
@@ -1435,7 +1620,7 @@ document.getElementById('importHtmlInput').addEventListener('change', async (e) 
       // its own persistent s.networkLog/s.xhrBodies rather than replacing
       // them, so response.data already IS the full merged set; assigning
       // it straight through is correct and matches what stopBtn does.
-      currentRecordingData = response.data;
+      currentRecordingData = withRequestContext(response.data);
       jsonPreview.value = JSON.stringify(currentRecordingData, null, 2);
       statusDiv.innerText = `✅ Imported ${response.added} snapshot(s) (${response.total} total). Ready for Gen Extractor / Full Extractor.`;
     } else {
@@ -1990,3 +2175,59 @@ function escHtml(s) {
 function escAttr(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+
+// ═══ [4.7.0] Cloudflare clearance for NovaPlay ═══════════════════════════
+// When Brave passes a site's Cloudflare check it gets a cf_clearance cookie,
+// tied to this browser's identity (User-Agent) and internet address. The box
+// shares the PC's address, so with the same cookie + User-Agent NovaPlay may
+// get through without the browser proxy. Saves novaplay_cookies.json: copy it
+// to /etc/enigma2/ on the box.
+function _cookieSiteLabel(host) {
+  const parts = String(host || '').toLowerCase().split('.').filter(Boolean);
+  if (parts.length < 2) return parts[0] || '';
+  const sld = parts[parts.length - 2];
+  if (['co', 'com', 'net', 'org'].includes(sld) && parts.length >= 3) return parts[parts.length - 3];
+  return sld;
+}
+
+document.getElementById("exportCookies").onclick = () => {
+  if (!chrome.cookies) {
+    statusDiv.innerText = "❌ Reload the extension (it needs the new 'cookies' permission).";
+    return;
+  }
+  chrome.windows.getLastFocused({ windowTypes: ["normal"], populate: true }, (win) => {
+    const tab = (win && win.tabs || []).find(t => t.active);
+    let label = '';
+    try { label = _cookieSiteLabel(new URL(tab.url).hostname); } catch (e) {}
+    chrome.cookies.getAll({}, (all) => {
+      const sites = {};
+      for (const c of all || []) {
+        const dom = String(c.domain || '').replace(/^\./, '').toLowerCase();
+        const mine = label && _cookieSiteLabel(dom) === label;
+        // this site's cookies, plus every site's Cloudflare clearance
+        if (!mine && c.name !== 'cf_clearance') continue;
+        const site = sites[dom] || (sites[dom] = { cookies: {}, expires: 0 });
+        site.cookies[c.name] = c.value;
+        if (c.name === 'cf_clearance' && c.expirationDate) site.expires = Math.round(c.expirationDate);
+      }
+      const n = Object.keys(sites).length;
+      if (!n) {
+        statusDiv.innerText = "ℹ️ No cookies found -- open the site in this tab first (pass its Cloudflare check), then click again.";
+        return;
+      }
+      const payload = {
+        format: 'novaplay-cookies-1',
+        exported: new Date().toISOString(),
+        user_agent: navigator.userAgent,
+        note: 'Copy to /etc/enigma2/novaplay_cookies.json on the box. cf_clearance only works with this exact User-Agent and the same internet address, and expires (usually within hours to a day).',
+        sites: sites,
+      };
+      downloadBlob(JSON.stringify(payload, null, 2), 'novaplay_cookies.json', 'application/json');
+      const cf = Object.entries(sites).filter(([d, v]) => v.cookies.cf_clearance).map(([d]) => d);
+      statusDiv.innerText = `🍪 Saved novaplay_cookies.json: ${n} site(s)` +
+        (cf.length ? `, Cloudflare clearance for ${cf.slice(0, 4).join(', ')}` : ' (no Cloudflare clearance found)') +
+        ` -- copy it to /etc/enigma2/ on the box.`;
+    });
+  });
+};

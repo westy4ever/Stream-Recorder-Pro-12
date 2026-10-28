@@ -29,6 +29,19 @@ export function initNetworkCapture() {
       if (!shouldRecordUrl(details.url)) return;
       if (!shouldRecordTab(details.tabId)) return;
 
+      // [4.6.0] a redirect keeps the SAME requestId and fires onBeforeRequest again for the
+      // new address -- this used to overwrite the entry and lose the hop (TopCinema's
+      // mixdrop.ps -> mxdrop.click frame showed only mxdrop.click). Keep the hop as its own
+      // networkLog record (status 30x + redirectUrl) and link the new one to it.
+      const prevHop = s.pending[details.requestId];
+      let redirectedFrom = null, redirectChain = null;
+      if (prevHop && prevHop.redirectUrl === details.url) {
+        redirectedFrom = prevHop.url;
+        redirectChain = (prevHop.redirectChain || [prevHop.url]).slice();
+        if (redirectChain[redirectChain.length - 1] !== details.url) redirectChain.push(details.url);
+        s.networkLog.push(prevHop);
+      }
+
       const isYTSApi = YTS_API_PATTERNS.some(pattern => pattern.test(details.url));
       const isArabicApi = ARABIC_API_PATTERNS.some(pattern => pattern.test(details.url));
       const isBackend = isSuspectedBackend(details.url);
@@ -42,7 +55,10 @@ export function initNetworkCapture() {
         type: details.type,
         tabId: details.tabId,
         frameId: details.frameId,
+        parentFrameId: details.parentFrameId ?? null,
         initiator: details.initiator || null,
+        redirectedFrom: redirectedFrom,
+        redirectChain: redirectChain,
         requestBody: safeBodyToString(details.requestBody),
         requestHeaders: null,
         statusCode: null,
@@ -94,6 +110,11 @@ export function initNetworkCapture() {
       if (entry) {
         entry.statusCode = details.statusCode;
         entry.responseHeaders = headersToObject(details.responseHeaders);
+        // [4.6.0] headersToObject keeps only the LAST Set-Cookie; keep them all
+        const sc = (details.responseHeaders || [])
+          .filter(h => h.name.toLowerCase() === 'set-cookie' && h.value)
+          .map(h => h.value);
+        if (sc.length) entry.setCookies = sc;
       }
 
       let isChallenge = false;
@@ -143,6 +164,10 @@ export function initNetworkCapture() {
         if (!entry.redirectChain) entry.redirectChain = [entry.url];
         entry.redirectChain.push(details.redirectUrl);
         entry.finalUrl = details.redirectUrl;
+        // [4.6.0] this hop's own result: onBeforeRequest files it as a separate record
+        entry.statusCode = details.statusCode;
+        entry.redirectUrl = details.redirectUrl;
+        if (details.responseHeaders) entry.responseHeaders = headersToObject(details.responseHeaders);
         scheduleSave();
       }
     },
@@ -172,6 +197,9 @@ export function initNetworkCapture() {
 
       entry.statusCode = details.statusCode;
       entry.fromCache = details.fromCache;
+      // [4.7.0] how long the request took (start -> finished), for spotting slow
+      // or reconnect-happy video servers (Mixdrop: many short slow requests)
+      entry.durationMs = Math.max(0, Date.now() - (entry.timestamp || Date.now()));
       if (!entry.responseHeaders && details.responseHeaders) {
         entry.responseHeaders = headersToObject(details.responseHeaders);
       }

@@ -21,7 +21,9 @@ export const STREAMING_SITES = [
   // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
   // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
   // case they come back, but arabseed.living is what's actually in use right now.
-  'arabseed.living', 'arabseed.men'
+  'arabseed.living', 'arabseed.men',
+  // [2026-11-05] ArabSeed's live addresses
+  'arabseed.giving', 'arabseed.sale', 'arabseed.wine'
 ];
 
 // ═══ NEW: Ad and spam domains to filter out ═══
@@ -95,6 +97,8 @@ export const CONTENT_DOMAINS = [
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
   'arabseed.living', 'arabseed.men',
+  // [2026-11-05] ArabSeed's live addresses
+  'arabseed.giving', 'arabseed.sale', 'arabseed.wine',
   'yts.lu', 'yify.sc', 'yts.mx',
   'savefiles.com'
 ];

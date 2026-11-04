@@ -18,6 +18,8 @@ export const STREAMING_SITES = [
   // [2026-11-05] faselhd.rip forwards here
   'faselhd.beer',
   'shaheed4u.solar', 'shahid4u.solar',
+  // [2026-11-05] Shaheed4u's and Shahid4u's live addresses
+  'shahhedd4u.net', 'shahid4u.coupons',
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address
   'akwam.ss',
@@ -99,6 +101,8 @@ export const CONTENT_DOMAINS = [
   // [2026-11-05] faselhd.rip forwards here
   'faselhd.beer',
   'shaheed4u.solar', 'shahid4u.solar',
+  // [2026-11-05] Shaheed4u's and Shahid4u's live addresses
+  'shahhedd4u.net', 'shahid4u.coupons',
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address
   'akwam.ss',

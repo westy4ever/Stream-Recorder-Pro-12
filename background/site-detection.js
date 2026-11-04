@@ -5,12 +5,18 @@ import { ARABIC_MOVIE_SITES, SAVEFILES_DOMAINS, SUSPECTED_BACKEND_DOMAINS, DOWNL
 // Streaming sites
 export const STREAMING_SITES = [
   'tv10.egydead.live', 'egydead.live', 'tv.egydead.live',
+  // [2026-11-04] EgyDead's address now (egydead.fyi / tv10 forward there)
+  'a1.egydead.media', 'egydead.media',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
   'topcinema.fan', 'topcinemaa.top',
+  // [2026-11-04] TopCinema's and EgyBest's live addresses
+  'topcinemaa.vip', 'egibest.life',
   'faselhd.rip', 'faselhdx.bid',
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
+  // [2026-11-04] Akwam's live address
+  'akwam.ss',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
   // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
@@ -74,12 +80,18 @@ export const AD_DOMAINS = [
 // ═══ NEW: Content domains that should trigger snapshots ═══
 export const CONTENT_DOMAINS = [
   'tv10.egydead.live', 'egydead.live', 'tv.egydead.live',
+  // [2026-11-04] EgyDead's address now (egydead.fyi / tv10 forward there)
+  'a1.egydead.media', 'egydead.media',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
   'topcinema.fan', 'topcinemaa.top',
+  // [2026-11-04] TopCinema's and EgyBest's live addresses
+  'topcinemaa.vip', 'egibest.life',
   'faselhd.rip', 'faselhdx.bid',
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
+  // [2026-11-04] Akwam's live address
+  'akwam.ss',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
   'arabseed.living', 'arabseed.men',

@@ -183,7 +183,7 @@ internet address. The box shares your PC's address, so NovaPlay can use it.
 
 1. **Reload the extension once** after updating: `brave://extensions` → reload
    on the Stream Recorder card. 4.7.0 asks for the *cookies* permission; allow it.
-2. **Open the site in Brave** (for example `https://tv10.egydead.live/`) and wait
+2. **Open the site in Brave** (for example `https://a1.egydead.media/`) and wait
    until the real page shows, not "Just a moment…".
 3. With that tab active, open the popup and click **🍪 For NovaPlay**.
    The status line says how many sites were saved and lists the ones with a

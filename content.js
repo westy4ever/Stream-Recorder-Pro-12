@@ -196,7 +196,8 @@ function isStreamingSite() {
   // (double i) -- confirmed directly, this domain was silently classified as 'unknown'
   // site type, skipping every special-case detection path. shahi+d matches both
   // shahid and shahiid.
-  return /egydead|tv10\.egydead|topcinema|faselhd|shahi+d|shaheed|akwam|arabseed/.test(hostname);
+  // [2026-11-04] EgyBest (egibest.life) added
+  return /egydead|tv10\.egydead|topcinema|faselhd|shahi+d|shaheed|akwam|arabseed|egibest|egybest/.test(hostname);
 }
 
 // ═══ ENHANCED: Detect site type ═══

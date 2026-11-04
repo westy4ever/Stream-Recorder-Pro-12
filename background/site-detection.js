@@ -7,6 +7,8 @@ export const STREAMING_SITES = [
   'tv10.egydead.live', 'egydead.live', 'tv.egydead.live',
   // [2026-11-04] EgyDead's address now (egydead.fyi / tv10 forward there)
   'a1.egydead.media', 'egydead.media',
+  // [2026-11-05] EgyDead Coupons' live address
+  'egydead.hair',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
   'topcinema.fan', 'topcinemaa.top',
@@ -86,6 +88,8 @@ export const CONTENT_DOMAINS = [
   'tv10.egydead.live', 'egydead.live', 'tv.egydead.live',
   // [2026-11-04] EgyDead's address now (egydead.fyi / tv10 forward there)
   'a1.egydead.media', 'egydead.media',
+  // [2026-11-05] EgyDead Coupons' live address
+  'egydead.hair',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
   'topcinema.fan', 'topcinemaa.top',

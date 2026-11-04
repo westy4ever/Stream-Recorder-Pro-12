@@ -13,6 +13,8 @@ export const STREAMING_SITES = [
   // [2026-11-04] TopCinema's and EgyBest's live addresses
   'topcinemaa.vip', 'egibest.life',
   'faselhd.rip', 'faselhdx.bid',
+  // [2026-11-05] faselhd.rip forwards here
+  'faselhd.beer',
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address
@@ -90,6 +92,8 @@ export const CONTENT_DOMAINS = [
   // [2026-11-04] TopCinema's and EgyBest's live addresses
   'topcinemaa.vip', 'egibest.life',
   'faselhd.rip', 'faselhdx.bid',
+  // [2026-11-05] faselhd.rip forwards here
+  'faselhd.beer',
   'shaheed4u.solar', 'shahid4u.solar',
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address

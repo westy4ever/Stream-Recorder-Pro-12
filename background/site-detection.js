@@ -11,6 +11,8 @@ export const STREAMING_SITES = [
   'egydead.hair',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
+  // [2026-11-05] the WeCima family's live addresses
+  'wecima.coupons', 'myweecima.autos', 'vid.mycima.cc',
   'topcinema.fan', 'topcinemaa.top',
   // [2026-11-04] TopCinema's and EgyBest's live addresses
   'topcinemaa.vip', 'egibest.life',
@@ -94,6 +96,8 @@ export const CONTENT_DOMAINS = [
   'egydead.hair',
   'wecima.click', 'wecima.cx', 'wecima.me', 'wecima.bid', 'wecima.site',
   'mycima.cx', 'mycima.me', 'mycima.xyz',
+  // [2026-11-05] the WeCima family's live addresses
+  'wecima.coupons', 'myweecima.autos', 'vid.mycima.cc',
   'topcinema.fan', 'topcinemaa.top',
   // [2026-11-04] TopCinema's and EgyBest's live addresses
   'topcinemaa.vip', 'egibest.life',
@@ -222,7 +226,7 @@ export function detectSiteType(urlStr) {
     if (isStreamingSite(urlStr)) return 'streaming';
     
     if (hostname.includes('yts') || hostname.includes('yify')) return 'yts';
-    if (hostname.includes('wecima') || hostname.includes('mycima')) return 'arabic_movie';
+    if (hostname.includes('wecima') || hostname.includes('weecima') || hostname.includes('mycima')) return 'arabic_movie';
     if (hostname.includes('savefiles')) return 'savefiles';
     if (hostname.includes('stream') || hostname.includes('cdn') || hostname.includes('hls')) return 'streaming';
     

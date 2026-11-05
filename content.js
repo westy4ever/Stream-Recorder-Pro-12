@@ -176,7 +176,7 @@ function hideRecordingIndicator() {
 // ═══ SITE DETECTION ═══
 function isArabicMovieSite() {
   const hostname = window.location.hostname;
-  return /wecima|mycima/.test(hostname);
+  return /wecima|weecima|mycima/.test(hostname);
 }
 
 function isSaveFilesSite() {
@@ -294,7 +294,7 @@ function getSelector(element) {
 function detectSPASite() {
   const hostname = window.location.hostname;
   if (/yts\.lu|yify\.sc|yts\.mx/.test(hostname)) return true;
-  if (/wecima|mycima/.test(hostname)) return true;
+  if (/wecima|weecima|mycima/.test(hostname)) return true;
   if (/egydead|tv10\.egydead/.test(hostname)) return true;
   const spaIndicators = [
     document.querySelector('#app, #root, #__next'),

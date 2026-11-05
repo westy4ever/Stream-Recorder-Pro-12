@@ -27,6 +27,8 @@ export const STREAMING_SITES = [
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address
   'akwam.ss',
+  // [2026-11-05] Akwams (Modern)
+  'akwams.org',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
   // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
@@ -114,6 +116,8 @@ export const CONTENT_DOMAINS = [
   'akwam.com.co', 'akwam.one',
   // [2026-11-04] Akwam's live address
   'akwam.ss',
+  // [2026-11-05] Akwams (Modern)
+  'akwams.org',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
   'arabseed.living', 'arabseed.men',

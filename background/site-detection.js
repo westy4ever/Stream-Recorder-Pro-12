@@ -33,6 +33,8 @@ export const STREAMING_SITES = [
   'aloytv.net', 'aloytv.com',
   // [2026-11-05] Laroza (new site)
   'laroza1.rest',
+  // [2026-11-05] laroza.best and ArabSeed TV (browse in NovaPlay, watch via Send to TV)
+  'laroza.best', 'arabseed-tv.com',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
   // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
@@ -126,6 +128,8 @@ export const CONTENT_DOMAINS = [
   'aloytv.net', 'aloytv.com',
   // [2026-11-05] Laroza (new site)
   'laroza1.rest',
+  // [2026-11-05] laroza.best and ArabSeed TV (browse in NovaPlay, watch via Send to TV)
+  'laroza.best', 'arabseed-tv.com',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
   'arabseed.living', 'arabseed.men',

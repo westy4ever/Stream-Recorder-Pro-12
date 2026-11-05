@@ -31,6 +31,8 @@ export const STREAMING_SITES = [
   'akwams.org',
   // [2026-11-05] AlooyTV (aloytv.com forwards to .net)
   'aloytv.net', 'aloytv.com',
+  // [2026-11-05] Laroza (new site)
+  'laroza1.rest',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] arabseed's current live domain plus the mirror/CDN domain its own pages load
   // images from (confirmed live, 2026-10-12) -- the old .cam/.cam domains above are kept in
@@ -122,6 +124,8 @@ export const CONTENT_DOMAINS = [
   'akwams.org',
   // [2026-11-05] AlooyTV (aloytv.com forwards to .net)
   'aloytv.net', 'aloytv.com',
+  // [2026-11-05] Laroza (new site)
+  'laroza1.rest',
   'arabseed.cam', 'arabseeds.cam',
   // [FIX] same as STREAMING_SITES above -- arabseed.living is the domain actually in use.
   'arabseed.living', 'arabseed.men',

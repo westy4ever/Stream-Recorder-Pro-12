@@ -197,7 +197,7 @@ function isStreamingSite() {
   // site type, skipping every special-case detection path. shahi+d matches both
   // shahid and shahiid.
   // [2026-11-04] EgyBest (egibest.life) added; [2026-11-05] shahhedd4u.net (Shaheed4u)
-  return /egydead|tv10\.egydead|topcinema|faselhd|shahi+d|shaheed|akwam|arabseed|egibest|egybest|shahhed/.test(hostname);
+  return /egydead|tv10\.egydead|topcinema|faselhd|fasel-hd|shahi+d|shaheed|akwam|arabseed|egibest|egybest|shahhed/.test(hostname);
 }
 
 // ═══ ENHANCED: Detect site type ═══

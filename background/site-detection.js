@@ -19,6 +19,8 @@ export const STREAMING_SITES = [
   'faselhd.rip', 'faselhdx.bid',
   // [2026-11-05] faselhd.rip forwards here
   'faselhd.beer',
+  // [2026-11-05] FaselHD (HDX): fasel-hd.cam forwards here
+  'fasel-hd.co', 'fasel-hd.cam',
   'shaheed4u.solar', 'shahid4u.solar',
   // [2026-11-05] Shaheed4u's and Shahid4u's live addresses
   'shahhedd4u.net', 'shahid4u.coupons',
@@ -104,6 +106,8 @@ export const CONTENT_DOMAINS = [
   'faselhd.rip', 'faselhdx.bid',
   // [2026-11-05] faselhd.rip forwards here
   'faselhd.beer',
+  // [2026-11-05] FaselHD (HDX): fasel-hd.cam forwards here
+  'fasel-hd.co', 'fasel-hd.cam',
   'shaheed4u.solar', 'shahid4u.solar',
   // [2026-11-05] Shaheed4u's and Shahid4u's live addresses
   'shahhedd4u.net', 'shahid4u.coupons',
